@@ -99,9 +99,10 @@ func Advertise(name, peerID string, port int) (func(), error) {
 
 // Browse runs until ctx is cancelled, feeding the registry from mDNS announcements.
 func Browse(ctx context.Context, reg *Registry) error {
-	entries := make(chan *zeroconf.ServiceEntry, 16)
+	// Continuous in-memory consumer for the long-lived Browse below.
+	merged := make(chan *zeroconf.ServiceEntry, 64)
 	go func() {
-		for entry := range entries {
+		for entry := range merged {
 			if os.Getenv("AGENTMESH_DEBUG") != "" {
 				fmt.Fprintf(os.Stderr, "agentmesh: mdns entry instance=%q text=%v\n", entry.Instance, entry.Text)
 			}
@@ -112,21 +113,50 @@ func Browse(ctx context.Context, reg *Registry) error {
 		}
 	}()
 
-	// Sweeper goroutine.
+	// Re-Browse periodically. libp2p/zeroconf v2's Browse caches its own
+	// emit-state inside one invocation: once it has surfaced a service entry
+	// to us, it won't re-surface the same entry until cache expiry, even if
+	// the peer keeps re-announcing on the network. By cycling Browse calls
+	// every ~25s we force fresh mDNS queries and let new emissions land in
+	// our registry — which is what kept peers visible to Apple's stack while
+	// our long-lived single Browse silently went quiet.
+	//
+	// We also deliberately do NOT sweep entries on a TTL. Once we've seen a
+	// peer, it stays in the registry until the agentmesh process restarts.
+	// A peer that's truly gone surfaces as a TLS connect failure at send
+	// time, which the agent can handle. The old 2-minute sweep was the
+	// thing that made conversations die mid-flight after restarts.
 	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
+			round, cancel := context.WithTimeout(ctx, 25*time.Second)
+			entries := make(chan *zeroconf.ServiceEntry, 16)
+			done := make(chan struct{})
+			go func() {
+				for e := range entries {
+					select {
+					case merged <- e:
+					default:
+					}
+				}
+				close(done)
+			}()
+			_ = zeroconf.Browse(round, ServiceType, Domain, entries)
+			cancel()
+			close(entries)
+			<-done
 			select {
 			case <-ctx.Done():
 				return
-			case <-t.C:
-				reg.sweep(2 * time.Minute)
+			case <-time.After(2 * time.Second):
 			}
 		}
 	}()
 
-	return zeroconf.Browse(ctx, ServiceType, Domain, entries)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func entryToPeer(e *zeroconf.ServiceEntry) Peer {
