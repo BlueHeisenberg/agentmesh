@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agentmesh — a tiny mesh so your agents can find each other on the LAN</title>
+<meta name="description" content="LAN-native P2P for AI agents. mDNS discovery, mTLS over Ed25519, MCP-native. ~1.5k LOC of Go.">
+<meta name="theme-color" content="#0A0A0A">
+
+<meta property="og:title" content="agentmesh">
+<meta property="og:description" content="a tiny mesh so your agents can find each other on the LAN.">
+<meta property="og:image" content="assets/header.svg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="assets/header.svg">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@200;300;400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:        #0A0908;
+    --bg-soft:   #121110;
+    --rule:      #1C1A17;
+    --rule-2:    #2A2724;
+    --fg:        #E8E6E1;
+    --fg-muted:  #8A8784;
+    --fg-ghost:  #4A4744;
+    --amber:     #E8C674;
+    --amber-dim: #8A7548;
+    --phosphor:  #88BFA8;
+    --red:       #C66B5C;
+    --col:       640px;
+    --font:      "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+
+  html {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    font-weight: 400;
+    font-size: 15px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Faint scanline + vignette so the page doesn't feel like flat black */
+  body {
+    min-height: 100vh;
+    position: relative;
+    background:
+      radial-gradient(ellipse at 50% -10%, rgba(232, 198, 116, 0.04), transparent 60%),
+      repeating-linear-gradient(
+        to bottom,
+        transparent 0,
+        transparent 3px,
+        rgba(255, 255, 255, 0.012) 3px,
+        rgba(255, 255, 255, 0.012) 4px
+      );
+  }
+
+  ::selection { background: var(--amber); color: var(--bg); }
+
+  a {
+    color: var(--fg);
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule-2);
+    transition: border-color 120ms ease, color 120ms ease;
+  }
+  a:hover { color: var(--amber); border-bottom-color: var(--amber); }
+
+  main {
+    max-width: var(--col);
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+
+  /* ── BOOT LOG ─────────────────────────────────────────────── */
+  .boot {
+    font-size: 11.5px;
+    line-height: 1.85;
+    color: var(--fg-ghost);
+    margin-bottom: 72px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .boot .ok    { color: var(--phosphor); }
+  .boot .warn  { color: var(--amber); }
+  .boot .you   { color: var(--fg-muted); }
+  .boot .prompt{ color: var(--amber); }
+  .boot .dim   { color: var(--fg-ghost); }
+
+  /* ── HERO ─────────────────────────────────────────────────── */
+  .hero {
+    padding-bottom: 64px;
+  }
+  .eyebrow {
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    margin: 0 0 28px;
+  }
+  .eyebrow .dot {
+    display: inline-block;
+    width: 6px; height: 6px;
+    background: var(--phosphor);
+    border-radius: 50%;
+    margin-right: 10px;
+    transform: translateY(-1px);
+    box-shadow: 0 0 8px var(--phosphor);
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 1; }
+  }
+
+  .wordmark {
+    font-size: clamp(56px, 12vw, 92px);
+    line-height: 0.95;
+    letter-spacing: -0.045em;
+    font-weight: 700;
+    margin: 0 0 14px;
+  }
+  .wordmark .slash {
+    color: var(--fg-ghost);
+    font-weight: 200;
+    margin: 0 6px 0 -4px;
+  }
+
+  .tagline {
+    font-size: 21px;
+    line-height: 1.35;
+    color: var(--fg);
+    margin: 0 0 14px;
+    letter-spacing: -0.015em;
+  }
+  .tagline em {
+    color: var(--fg-muted);
+    font-style: normal;
+  }
+  .caret {
+    display: inline-block;
+    width: 9px;
+    height: 1.05em;
+    background: var(--amber);
+    vertical-align: text-bottom;
+    margin-left: 4px;
+    animation: blink 1.05s steps(1) infinite;
+  }
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+
+  .submeta {
+    font-size: 12px;
+    color: var(--fg-muted);
+    margin: 0 0 28px;
+    letter-spacing: 0.01em;
+  }
+  .submeta span + span::before {
+    content: "·";
+    color: var(--fg-ghost);
+    margin: 0 8px;
+  }
+
+  .hero-nav {
+    margin-top: 14px;
+    font-size: 13px;
+  }
+  .hero-nav a {
+    margin-right: 18px;
+    border: none;
+    color: var(--fg-muted);
+  }
+  .hero-nav a::before {
+    content: "→ ";
+    color: var(--fg-ghost);
+  }
+  .hero-nav a:hover { color: var(--amber); }
+
+  /* ── SECTION SCAFFOLDING ─────────────────────────────────── */
+  .rule {
+    border: 0;
+    border-top: 1px solid var(--rule);
+    margin: 0;
+  }
+
+  section {
+    padding: 64px 0;
+    position: relative;
+  }
+  .section-label {
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    color: var(--fg-ghost);
+    text-transform: uppercase;
+    margin: 0 0 8px;
+  }
+  .section-label .num {
+    color: var(--amber-dim);
+    margin-right: 6px;
+  }
+  h2 {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    margin: 0 0 24px;
+  }
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0;
+    margin: 0 0 6px;
+  }
+  p { margin: 0 0 14px; }
+  p.lead {
+    font-size: 16.5px;
+    color: var(--fg);
+    margin-bottom: 28px;
+  }
+  p.muted { color: var(--fg-muted); }
+
+  /* ── CODE BLOCKS ─────────────────────────────────────────── */
+  .code {
+    position: relative;
+    margin: 20px 0 18px;
+    border: 1px solid var(--rule-2);
+    border-radius: 2px;
+    background: var(--bg-soft);
+  }
+  .code-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--rule);
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    color: var(--fg-ghost);
+    text-transform: uppercase;
+  }
+  .code-head .dots { display: inline-flex; gap: 6px; margin-right: 12px; }
+  .code-head .dots i {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--rule-2);
+  }
+  .copy-btn {
+    background: transparent;
+    border: none;
+    font: inherit;
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    color: var(--fg-muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    margin: 0;
+    transition: color 120ms ease;
+  }
+  .copy-btn:hover { color: var(--amber); }
+  .copy-btn.copied { color: var(--phosphor); }
+  pre {
+    margin: 0;
+    padding: 16px 18px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--fg);
+    overflow-x: auto;
+    white-space: pre;
+  }
+  pre .prompt { color: var(--amber); }
+  pre .comment { color: var(--fg-ghost); }
+  code {
+    font-family: inherit;
+    background: var(--bg-soft);
+    padding: 1px 5px;
+    border: 1px solid var(--rule-2);
+    border-radius: 2px;
+    font-size: 12.5px;
+  }
+  p code { font-size: 12.5px; }
+
+  /* ── ASCII DIAGRAMS ──────────────────────────────────────── */
+  .ascii {
+    padding: 28px 18px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--fg-muted);
+    text-align: center;
+    overflow-x: auto;
+  }
+  .ascii .hl { color: var(--fg); }
+  .ascii .amber { color: var(--amber); }
+
+  /* ── STEPS (HOW IT WORKS) ────────────────────────────────── */
+  ol.steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: step;
+  }
+  ol.steps > li {
+    position: relative;
+    padding: 22px 0 22px 64px;
+    border-top: 1px solid var(--rule);
+  }
+  ol.steps > li:last-child { border-bottom: 1px solid var(--rule); }
+  ol.steps > li::before {
+    counter-increment: step;
+    content: "0" counter(step);
+    position: absolute;
+    left: 0; top: 22px;
+    font-size: 12px;
+    color: var(--amber-dim);
+    letter-spacing: 0.12em;
+  }
+  ol.steps > li::after {
+    content: "";
+    position: absolute;
+    left: 26px; top: 28px;
+    width: 22px;
+    border-top: 1px solid var(--rule-2);
+  }
+
+  /* ── BEFORE/AFTER TABLE ──────────────────────────────────── */
+  .compare {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    margin: 12px 0 0;
+  }
+  .compare th, .compare td {
+    text-align: left;
+    padding: 12px 14px;
+    border: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .compare thead th {
+    font-weight: 600;
+    font-size: 10.5px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    background: var(--bg-soft);
+  }
+  .compare thead th:first-child { color: var(--fg-ghost); }
+  .compare thead th:last-child  { color: var(--amber-dim); }
+  .compare td.left  { color: var(--fg-muted); }
+  .compare td.right { color: var(--fg); }
+  .compare td.right code { background: transparent; border: none; padding: 0; color: var(--amber); }
+
+  /* ── TOOLS LIST ──────────────────────────────────────────── */
+  dl.tools {
+    margin: 8px 0 0;
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    row-gap: 10px;
+    column-gap: 20px;
+    font-size: 13.5px;
+  }
+  dl.tools dt {
+    color: var(--amber);
+    font-weight: 500;
+  }
+  dl.tools dd {
+    margin: 0;
+    color: var(--fg-muted);
+  }
+
+  /* ── TRUST PRINCIPLES ────────────────────────────────────── */
+  ul.principles {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    font-size: 13.5px;
+  }
+  ul.principles li {
+    padding: 9px 0 9px 30px;
+    position: relative;
+    color: var(--fg);
+    border-top: 1px dashed var(--rule);
+  }
+  ul.principles li:last-child { border-bottom: 1px dashed var(--rule); }
+  ul.principles li::before {
+    content: attr(data-mark);
+    position: absolute;
+    left: 0; top: 9px;
+    font-weight: 700;
+    width: 22px;
+    text-align: center;
+  }
+  ul.principles li[data-tone="ok"]::before  { color: var(--phosphor); }
+  ul.principles li[data-tone="warn"]::before{ color: var(--amber); }
+  ul.principles li small {
+    display: block;
+    color: var(--fg-muted);
+    margin-top: 2px;
+    font-size: 12.5px;
+  }
+
+  /* ── FOOTER ──────────────────────────────────────────────── */
+  footer {
+    margin-top: 96px;
+    padding-top: 48px;
+    border-top: 1px solid var(--rule);
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+  footer .fl {
+    color: var(--fg-ghost);
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre;
+    text-align: center;
+    margin-bottom: 22px;
+  }
+  footer .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 18px;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  footer .row a { border: none; color: var(--fg-muted); }
+  footer .row a:hover { color: var(--amber); }
+  footer .lan {
+    color: var(--fg-ghost);
+    letter-spacing: 0.06em;
+  }
+  footer .lan::before { content: "[ "; }
+  footer .lan::after  { content: " ]"; }
+
+  /* ── STAGGERED LOAD ──────────────────────────────────────── */
+  .reveal {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: enter 600ms cubic-bezier(.2,.7,.2,1) forwards;
+  }
+  @keyframes enter {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .r1 { animation-delay:  40ms; }
+  .r2 { animation-delay: 120ms; }
+  .r3 { animation-delay: 200ms; }
+  .r4 { animation-delay: 280ms; }
+  .r5 { animation-delay: 360ms; }
+  .r6 { animation-delay: 440ms; }
+  .r7 { animation-delay: 520ms; }
+  .r8 { animation-delay: 600ms; }
+  .r9 { animation-delay: 680ms; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { animation: none; opacity: 1; transform: none; }
+    .caret  { animation: none; }
+    .eyebrow .dot { animation: none; }
+  }
+
+  @media (max-width: 540px) {
+    main { padding: 32px 20px 64px; }
+    .boot { font-size: 10.5px; }
+    .ascii { font-size: 11px; }
+    dl.tools { grid-template-columns: 1fr; row-gap: 4px; }
+    dl.tools dd { margin-bottom: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<main>
+
+  <!-- BOOT LOG ───────────────────────────────────────────────── -->
+  <pre class="boot reveal r1"><span class="prompt">$</span> agentmesh serve --name=davids-laptop
+<span class="dim">agentmesh: listening on :49892 as davids-laptop (peer_id=4e3f7a91d8c01b2c…)</span>
+<span class="dim">agentmesh: advertising _agentmesh._tcp.local</span>
+agentmesh: discovered peer <span class="you">node-B</span> (8b14ffa2c01d3e5f…) at 192.168.1.42:51008
+agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…) at 192.168.1.71:50213
+<span class="ok">mtls: handshake ok</span> · <span class="ok">mtls: handshake ok</span>
+<span class="warn">▌</span> waiting for inbox…</pre>
+
+  <!-- HERO ───────────────────────────────────────────────────── -->
+  <header class="hero">
+    <p class="eyebrow reveal r2"><span class="dot"></span> v0.2.0 · MIT · LAN-NATIVE · OPEN SOURCE</p>
+
+    <h1 class="wordmark reveal r3">agent<span class="slash">/</span>mesh</h1>
+
+    <p class="tagline reveal r4">
+      a tiny mesh so your agents can find each other on the&nbsp;LAN.<span class="caret"></span>
+    </p>
+    <p class="tagline reveal r4">
+      <em>mDNS discovery · mTLS over Ed25519 · MCP-native.</em>
+    </p>
+
+    <p class="submeta reveal r5">
+      <span>~1.5k LOC of Go</span>
+      <span>11M static binary</span>
+      <span>zero config</span>
+    </p>
+
+    <nav class="hero-nav reveal r5">
+      <a href="#install">install</a>
+      <a href="#how">how it works</a>
+      <a href="#tools">tools</a>
+      <a href="#trust">trust</a>
+      <a href="https://github.com/BlueHeisenberg/agentmesh">github</a>
+    </nav>
+  </header>
+
+  <hr class="rule">
+
+  <!-- WHAT IT IS ─────────────────────────────────────────────── -->
+  <section id="why">
+    <p class="section-label"><span class="num">// 00</span>the problem</p>
+    <h2>Two agents. One wall.</h2>
+    <p class="lead">
+      You're running two harnessed agents — Claude Code on your laptop, Claude Code on a teammate's,
+      maybe one in a VM. Each has <em>its</em> context, <em>its</em> files, <em>its</em> memory. There is no way
+      for them to see each other, let alone hand off a file or ask a question without going through
+      the cloud.
+    </p>
+    <p class="muted">
+      The internet is the wrong layer for this. The LAN is right there.
+    </p>
+  </section>
+
+  <hr class="rule">
+
+  <!-- TOPOLOGY ───────────────────────────────────────────────── -->
+  <section id="topology">
+    <p class="section-label"><span class="num">// 01</span>topology</p>
+    <h2>One node per harness.</h2>
+    <p>
+      Each harness instance spawns a local <code>agentmesh</code> process. The harness talks to its own node
+      over stdio MCP. The nodes do the P2P — mDNS to discover each other, mTLS to talk.
+    </p>
+    <pre class="ascii"><span class="hl">claude code A</span>                               <span class="hl">claude code B</span>
+     │                                           │
+     │ stdio MCP                                 │ stdio MCP
+     ▼                                           ▼
+┌──────────────┐                           ┌──────────────┐
+│   agentmesh  │ ◀═══════ <span class="amber">mTLS 1.3</span> ═══════▶ │   agentmesh  │
+│     node A   │                           │     node B   │
+└──────┬───────┘                           └───────┬──────┘
+       │                                           │
+       └──────────── <span class="amber">_agentmesh._tcp.local</span> ────────┘
+                            (LAN)
+</pre>
+  </section>
+
+  <hr class="rule">
+
+  <!-- INSTALL ────────────────────────────────────────────────── -->
+  <section id="install">
+    <p class="section-label"><span class="num">// 02</span>install</p>
+    <h2>Build &amp; point your harness at it.</h2>
+    <p>Requires Go 1.22+. The binary ships as a single static file.</p>
+
+    <div class="code">
+      <div class="code-head">
+        <span><span class="dots"><i></i><i></i><i></i></span>shell</span>
+        <button class="copy-btn" data-target="install-sh">copy</button>
+      </div>
+<pre id="install-sh"><span class="prompt">$</span> git clone git@github.com:BlueHeisenberg/agentmesh.git
+<span class="prompt">$</span> cd agentmesh
+<span class="prompt">$</span> go build -o agentmesh ./cmd/agentmesh
+<span class="prompt">$</span> ./agentmesh whoami
+<span class="comment"># peer_id: 4e3f7a91d8c01b2c…</span>
+<span class="comment"># name:    davids-laptop</span></pre>
+    </div>
+
+    <p style="margin-top:24px;">
+      Then add to your harness's MCP config. For Claude Code, <code>~/.claude.json</code>:
+    </p>
+
+    <div class="code">
+      <div class="code-head">
+        <span><span class="dots"><i></i><i></i><i></i></span>~/.claude.json</span>
+        <button class="copy-btn" data-target="mcp-json">copy</button>
+      </div>
+<pre id="mcp-json">{
+  <span class="comment">"mcpServers"</span>: {
+    <span class="comment">"agentmesh"</span>: {
+      <span class="comment">"command"</span>: <span class="comment">"/abs/path/to/agentmesh"</span>,
+      <span class="comment">"args"</span>: [<span class="comment">"serve"</span>, <span class="comment">"--name=your-laptop"</span>]
+    }
+  }
+}</pre>
+    </div>
+
+    <p class="muted" style="margin-top:18px;">
+      Restart the harness. The agent now has eight <code>mesh_*</code> tools.
+    </p>
+  </section>
+
+  <hr class="rule">
+
+  <!-- HOW IT WORKS ───────────────────────────────────────────── -->
+  <section id="how">
+    <p class="section-label"><span class="num">// 03</span>how it works</p>
+    <h2>Four jobs, same code on every node.</h2>
+
+    <ol class="steps">
+      <li>
+        <h3>identity</h3>
+        <p class="muted">An Ed25519 keypair, persisted to <code>~/.agentmesh/identity.json</code>. The public key, hex-encoded, is your <code>peer_id</code>. The same keypair becomes a self-signed X.509 certificate used by TLS — no CA, no renewal.</p>
+      </li>
+      <li>
+        <h3>discovery</h3>
+        <p class="muted">Advertise <code>_agentmesh._tcp.local</code> over mDNS with the peer_id in the TXT record. Browse for the same service type. Peers come and go automatically; nothing to configure.</p>
+      </li>
+      <li>
+        <h3>transport</h3>
+        <p class="muted">HTTPS on a random LAN port. Every connection is <strong>mTLS 1.3</strong>. The client pins the server's cert against the peer_id it expected from mDNS. A LAN attacker can advertise an arbitrary peer_id — they can't talk to you <em>as</em> that peer without the private key.</p>
+      </li>
+      <li>
+        <h3>mcp shim</h3>
+        <p class="muted">Each tool is a thin wrapper over the node — <code>mesh_send</code> POSTs to a peer's <code>/v1/msg</code>; <code>mesh_fetch</code> GETs <code>/v1/share/{handle}</code>. The harness never speaks mDNS or TLS; it just speaks MCP.</p>
+      </li>
+    </ol>
+  </section>
+
+  <hr class="rule">
+
+  <!-- BEFORE / AFTER ─────────────────────────────────────────── -->
+  <section id="compare">
+    <p class="section-label"><span class="num">// 04</span>before / after</p>
+    <h2>What changes.</h2>
+
+    <table class="compare">
+      <thead>
+        <tr>
+          <th>without agentmesh</th>
+          <th>with agentmesh</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="left">"copy this file to my other laptop"</td>
+          <td class="right"><code>mesh_share</code> + <code>mesh_fetch</code></td>
+        </tr>
+        <tr>
+          <td class="left">"ask the other agent what it found"</td>
+          <td class="right"><code>mesh_send</code> + <code>mesh_inbox</code></td>
+        </tr>
+        <tr>
+          <td class="left">cloud relay, accounts, ngrok tunnels</td>
+          <td class="right">mDNS + mTLS, on the LAN</td>
+        </tr>
+        <tr>
+          <td class="left">plaintext WebSockets you forgot to TLS</td>
+          <td class="right">TLS 1.3 by construction</td>
+        </tr>
+        <tr>
+          <td class="left">a server somewhere</td>
+          <td class="right">an 11M static binary</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <hr class="rule">
+
+  <!-- TOOLS ──────────────────────────────────────────────────── -->
+  <section id="tools">
+    <p class="section-label"><span class="num">// 05</span>mcp tools</p>
+    <h2>Eight tools. That's all.</h2>
+    <p class="muted">All take JSON arguments, return JSON. The agent decides when to use them.</p>
+
+    <dl class="tools">
+      <dt>mesh_whoami</dt>     <dd>peer_id, name, port, version.</dd>
+      <dt>mesh_peers</dt>      <dd>list peers discovered on the LAN.</dd>
+      <dt>mesh_send</dt>       <dd>send a JSON message to a peer, or <code>"*"</code> to broadcast.</dd>
+      <dt>mesh_inbox</dt>      <dd>read incoming messages. <code>wait_seconds</code> long-polls.</dd>
+      <dt>mesh_share</dt>      <dd>register a file as shareable. Returns a handle.</dd>
+      <dt>mesh_fetch</dt>      <dd>fetch a shared blob from a peer. Inline or to disk.</dd>
+      <dt>mesh_shares</dt>     <dd>list local shares currently on offer.</dd>
+      <dt>mesh_unshare</dt>    <dd>revoke a share by handle.</dd>
+    </dl>
+  </section>
+
+  <hr class="rule">
+
+  <!-- TRUST MODEL ────────────────────────────────────────────── -->
+  <section id="trust">
+    <p class="section-label"><span class="num">// 06</span>trust model</p>
+    <h2>Encrypted by construction.</h2>
+    <p class="muted">
+      The threat model is a trusted LAN. Within that perimeter, four things are true.
+    </p>
+
+    <ul class="principles">
+      <li data-mark="✓" data-tone="ok">
+        All traffic is mTLS 1.3, Ed25519-backed self-signed certs.
+        <small>The encryption isn't optional, can't be downgraded, and the cert pinning happens against the peer_id from mDNS.</small>
+      </li>
+      <li data-mark="✓" data-tone="ok">
+        Identity <em>is</em> the public key.
+        <small>The peer_id is the hex of the Ed25519 pubkey. Every authenticated request's "from" is the validated cert pubkey — body-claimed identity fields are cross-checked.</small>
+      </li>
+      <li data-mark="!" data-tone="warn">
+        Discovery is open.
+        <small>Anyone on the LAN advertising <code>_agentmesh._tcp</code> shows up in your peer table. Messages from unknown peers are flagged <code>first_contact: true</code> in the inbox — the agent decides.</small>
+      </li>
+      <li data-mark="✓" data-tone="ok">
+        Files require explicit share.
+        <small>Nothing on disk is reachable until the sender calls <code>mesh_share</code>. <code>allow_peers</code> restricts to specific peer_ids, and those restrictions can't be spoofed.</small>
+      </li>
+    </ul>
+  </section>
+
+  <hr class="rule">
+
+  <!-- OUT OF SCOPE ───────────────────────────────────────────── -->
+  <section id="scope">
+    <p class="section-label"><span class="num">// 07</span>not in the box</p>
+    <h2>What this isn't.</h2>
+    <ul class="principles">
+      <li data-mark="·" data-tone="warn">
+        No NAT traversal.
+        <small>This is a LAN tool. If you need agents across the open internet, you want a relay, not a mesh.</small>
+      </li>
+      <li data-mark="·" data-tone="warn">
+        No persistence.
+        <small>The inbox lives in memory. If the node dies, the queue dies with it.</small>
+      </li>
+      <li data-mark="·" data-tone="warn">
+        No file streaming primitives.
+        <small>A "file" is a single HTTPS GET. Want resumable transfer? Layer it on <code>mesh_share</code> + your own protocol.</small>
+      </li>
+    </ul>
+  </section>
+
+  <hr class="rule">
+
+  <!-- THE MESH (closing visual) ──────────────────────────────── -->
+  <section id="mesh">
+    <p class="section-label"><span class="num">// 08</span>the mesh</p>
+    <h2>Three nodes, one LAN.</h2>
+    <pre class="ascii">┌──────────────────────────────────────────────────────┐
+│   <span class="amber">_agentmesh._tcp.local</span>                              │
+│                                                      │
+│              <span class="hl">┌───┐</span>                                   │
+│              <span class="hl">│ A │</span>                                   │
+│              <span class="hl">└─┬─┘</span>                                   │
+│            ╱       ╲                                 │
+│           ╱   <span class="amber">[ 🔒 ]</span>  ╲                                │
+│          ╱    <span class="amber">mTLS</span>     ╲                               │
+│       <span class="hl">┌─┴─┐</span>         <span class="hl">┌─┴─┐</span>                             │
+│       <span class="hl">│ B │</span> ─────── <span class="hl">│ C │</span>                             │
+│       <span class="hl">└───┘</span>         <span class="hl">└───┘</span>                             │
+│                                                      │
+└──────────────────────────────────────────────────────┘</pre>
+  </section>
+
+  <!-- FOOTER ─────────────────────────────────────────────────── -->
+  <footer>
+    <pre class="fl">·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·
+        ─── eof ───
+·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·</pre>
+    <div class="row">
+      <span>
+        <a href="https://github.com/BlueHeisenberg/agentmesh">BlueHeisenberg/agentmesh</a>
+        · MIT
+        · v0.2.0
+      </span>
+      <span class="lan">_agentmesh._tcp.local</span>
+    </div>
+  </footer>
+
+</main>
+
+<script>
+  // copy buttons — vanilla, no framework
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = document.getElementById(btn.dataset.target);
+      if (!target) return;
+      // strip the inline <span> markup, keep the plain text
+      var text = target.innerText.replace(/ /g, ' ');
+      // also strip leading "$ " prompt markers so the user gets runnable lines
+      text = text.split('\n').map(function (l) {
+        return l.replace(/^\$\s?/, '');
+      }).join('\n');
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = '✓ copied';
+        btn.classList.add('copied');
+        setTimeout(function () {
+          btn.textContent = 'copy';
+          btn.classList.remove('copied');
+        }, 1400);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

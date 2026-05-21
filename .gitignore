@@ -1,0 +1,7 @@
+# Built binaries (anchored to repo root so cmd/agentmesh/ source dir isn't ignored)
+/agentmesh
+/cmd/agentmesh/agentmesh-test
+*.log
+
+# Identity (per-machine, never committed)
+.agentmesh/

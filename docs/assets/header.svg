@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-label="agentmesh — LAN-native P2P for AI agents">
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 L0 0 0 40" fill="none" stroke="#1A1A1A" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="75%">
+      <stop offset="60%" stop-color="#0A0A0A" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.6"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="320" fill="#0A0A0A"/>
+  <rect width="1200" height="320" fill="url(#grid)" opacity="0.55"/>
+  <rect width="1200" height="320" fill="url(#vignette)"/>
+
+  <!-- frame ticks -->
+  <g stroke="#EAEAEA" stroke-width="1.5" fill="none">
+    <path d="M40 32 L40 16 L72 16"/>
+    <path d="M1160 32 L1160 16 L1128 16"/>
+    <path d="M40 288 L40 304 L72 304"/>
+    <path d="M1160 288 L1160 304 L1128 304"/>
+  </g>
+
+  <!-- meta line -->
+  <text x="56" y="22" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#7A7A7A" letter-spacing="2.4">v0.2.0 · mit · lan-native</text>
+
+  <!-- wordmark -->
+  <text x="40" y="172" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="108" font-weight="800" fill="#F4F4F4" letter-spacing="-4">agentmesh</text>
+
+  <!-- accent underbar -->
+  <rect x="40" y="186" width="120" height="3" fill="#F4F4F4"/>
+
+  <!-- tagline -->
+  <text x="40" y="226" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="20" fill="#D6D6D6" letter-spacing="-0.2">a tiny mesh so your agents can find each other on the lan.</text>
+  <text x="40" y="252" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" fill="#8A8A8A" letter-spacing="0.6">mDNS discovery · mTLS over Ed25519 · MCP-native</text>
+
+  <!-- right-side mesh diagram -->
+  <g transform="translate(860, 60)">
+    <!-- frame -->
+    <rect x="0" y="0" width="280" height="200" fill="none" stroke="#5A5A5A" stroke-width="1" stroke-dasharray="2 4"/>
+    <text x="8" y="-6" font-family="ui-monospace,monospace" font-size="10" fill="#7A7A7A" letter-spacing="1.6">peers.local</text>
+
+    <!-- node A -->
+    <g transform="translate(140, 32)">
+      <circle r="22" fill="#0A0A0A" stroke="#F4F4F4" stroke-width="2"/>
+      <text y="5" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#F4F4F4">A</text>
+    </g>
+    <!-- node B -->
+    <g transform="translate(50, 156)">
+      <circle r="22" fill="#0A0A0A" stroke="#F4F4F4" stroke-width="2"/>
+      <text y="5" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#F4F4F4">B</text>
+    </g>
+    <!-- node C -->
+    <g transform="translate(230, 156)">
+      <circle r="22" fill="#0A0A0A" stroke="#F4F4F4" stroke-width="2"/>
+      <text y="5" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="#F4F4F4">C</text>
+    </g>
+
+    <!-- dashed edges -->
+    <g stroke="#9A9A9A" stroke-width="1.5" stroke-dasharray="4 5">
+      <line x1="122" y1="46" x2="68" y2="142"/>
+      <line x1="158" y1="46" x2="212" y2="142"/>
+      <line x1="72" y1="156" x2="208" y2="156"/>
+    </g>
+
+    <!-- lock badge centered -->
+    <g transform="translate(130, 98)">
+      <rect x="-1" y="-1" width="22" height="22" fill="#0A0A0A"/>
+      <rect x="2" y="6" width="16" height="12" fill="#0A0A0A" stroke="#F4F4F4" stroke-width="1.4" rx="1.5"/>
+      <path d="M5 6 v-3 a5 5 0 0 1 10 0 v3" fill="none" stroke="#F4F4F4" stroke-width="1.4"/>
+      <circle cx="10" cy="12" r="1.5" fill="#F4F4F4"/>
+    </g>
+    <text x="140" y="138" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#9A9A9A" letter-spacing="1.4">mTLS</text>
+  </g>
+</svg>
