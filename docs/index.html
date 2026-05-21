@@ -557,8 +557,8 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <!-- INSTALL ────────────────────────────────────────────────── -->
   <section id="install">
     <p class="section-label"><span class="num">// 02</span>install</p>
-    <h2>One line. No dependencies.</h2>
-    <p>Linux &amp; macOS, amd64 + arm64. Fetches the latest signed release, verifies its sha256, drops the binary in <code>/usr/local/bin</code> (or <code>~/.local/bin</code> as a fallback).</p>
+    <h2>One line. Then it's just there.</h2>
+    <p>The installer downloads the latest signed release for your OS/arch, verifies its sha256, drops the binary into <code>/usr/local/bin</code>, and <em>registers itself with Claude Code</em> by adding an <code>agentmesh</code> entry to <code>~/.claude.json</code> (with a backup of whatever was there). Open any Claude Code session afterwards and the eight <code>mesh_*</code> tools are already wired up — nothing to start, nothing to remember.</p>
 
     <div class="code">
       <div class="code-head">
@@ -569,9 +569,12 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
     </div>
 
     <p class="muted" style="margin-top:18px;">
-      Want to pin a version or change the install dir? Pass env vars to <code>sh</code>:<br>
-      <code>curl … | VERSION=v0.2.0 PREFIX=$HOME/bin sh</code>.
-      Or from source: <code>go build -o agentmesh ./cmd/agentmesh</code>.
+      Knobs (pass to <code>sh</code>, not <code>curl</code>):
+      <code>VERSION=v0.2.0</code>,
+      <code>PREFIX=$HOME/bin</code>,
+      <code>NAME=davids-laptop</code>,
+      <code>SKIP_REGISTER=1</code>.
+      Idempotent — safe to re-run.
     </p>
 
     <p style="margin-top:24px;">

@@ -126,14 +126,78 @@ case ":$PATH:" in
   *) printf "${C_AMBER}!${C_OFF} ${PREFIX} is not in your PATH — add it to your shell rc.\n" ;;
 esac
 
-printf "${C_DIM}Add to ~/.claude.json:${C_OFF}\n\n"
-cat <<EOF
+# ---- auto-register with Claude Code ----------------------------------------
+# Adds an "agentmesh" entry to ~/.claude.json under mcpServers, so any future
+# Claude Code session on this machine has the mesh tools available with no
+# manual setup. Set SKIP_REGISTER=1 to disable. Set NAME=foo to override.
+
+short_host="${NAME:-$(hostname -s 2>/dev/null || echo this-machine)}"
+bin_path="${PREFIX}/${BIN}"
+ccfg="${CLAUDE_CONFIG:-${HOME}/.claude.json}"
+
+if [ -n "${SKIP_REGISTER:-}" ]; then
+  info "skipping Claude Code registration (SKIP_REGISTER set)"
+elif ! command -v python3 >/dev/null 2>&1; then
+  info "python3 not found — skipping auto-registration"
+  printf "${C_DIM}  Add this to ${ccfg} manually:${C_OFF}\n\n"
+  cat <<EOF
   "mcpServers": {
     "agentmesh": {
-      "command": "${PREFIX}/${BIN}",
-      "args": ["serve", "--name=$(hostname -s 2>/dev/null || echo this-machine)"]
+      "command": "${bin_path}",
+      "args": ["serve", "--name=${short_host}"]
     }
   }
 
 EOF
-printf "${C_DIM}Then restart your harness. Docs: https://blueheisenberg.github.io/agentmesh/${C_OFF}\n"
+else
+  result="$(python3 - "$ccfg" "$bin_path" "$short_host" <<'PYEOF'
+import json, os, shutil, sys
+cfg, bin_path, hostname = sys.argv[1], sys.argv[2], sys.argv[3]
+
+data = {}
+if os.path.exists(cfg):
+    try:
+        with open(cfg) as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"BAD_JSON {e}")
+        sys.exit(2)
+
+if not isinstance(data, dict):
+    print("NOT_OBJECT")
+    sys.exit(3)
+
+mcp = data.setdefault("mcpServers", {})
+if not isinstance(mcp, dict):
+    print("MCP_NOT_OBJECT")
+    sys.exit(4)
+
+desired = {"command": bin_path, "args": ["serve", f"--name={hostname}"]}
+if mcp.get("agentmesh") == desired:
+    print("ALREADY")
+    sys.exit(0)
+
+if os.path.exists(cfg):
+    shutil.copyfile(cfg, cfg + ".bak")
+mcp["agentmesh"] = desired
+tmp = cfg + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, cfg)
+print("OK" if os.path.exists(cfg + ".bak") else "CREATED")
+PYEOF
+)"
+
+  case "$result" in
+    OK)        ok "registered with Claude Code in ${ccfg} (backup at ${ccfg}.bak)" ;;
+    CREATED)   ok "created ${ccfg} with agentmesh entry" ;;
+    ALREADY)   ok "Claude Code already configured for agentmesh" ;;
+    BAD_JSON*) printf "${C_AMBER}!${C_OFF} ${ccfg} isn't valid JSON, not touching it. Add the snippet below manually.\n" ;;
+    NOT_OBJECT|MCP_NOT_OBJECT)
+               printf "${C_AMBER}!${C_OFF} ${ccfg} has an unexpected shape. Add the snippet below manually.\n" ;;
+    *)         printf "${C_AMBER}!${C_OFF} couldn't auto-register: %s\n" "$result" ;;
+  esac
+fi
+
+printf "\n${C_BOLD}You're done.${C_OFF} Open any Claude Code session and try ${C_AMBER}mesh_whoami${C_OFF}.\n"
+printf "${C_DIM}Docs: https://blueheisenberg.github.io/agentmesh/${C_OFF}\n"

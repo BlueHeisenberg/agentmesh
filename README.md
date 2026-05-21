@@ -38,22 +38,35 @@ One node per harness instance. The harness never talks to another harness direct
 
 ## Install
 
-**One-liner** (Linux / macOS, amd64 + arm64 — fetches the latest signed release, verifies sha256, drops the binary in `/usr/local/bin` or `~/.local/bin`):
+One line. Linux & macOS, amd64 + arm64.
 
 ```bash
 curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | sh
 ```
 
-Want to pin a version or change the install dir? Pass the env vars to `sh`, not `curl`:
+The installer fetches the latest signed release, verifies the sha256 checksum, drops the binary into `/usr/local/bin` (or `~/.local/bin`), and **registers itself with Claude Code** by adding an `agentmesh` entry to `~/.claude.json` (with a `.bak` backup of your existing config). Open any Claude Code session after that and the eight `mesh_*` tools are just there — no `agentmesh serve` to remember, no config to paste.
 
-```bash
-curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | VERSION=v0.2.0 PREFIX=$HOME/bin sh
-```
+Idempotent — re-running won't duplicate anything.
 
 <details>
-<summary>Other install paths</summary>
+<summary>Knobs & opt-outs</summary>
 
-**From a release archive** — grab one from <a href="https://github.com/BlueHeisenberg/agentmesh/releases/latest">releases</a> and extract.
+```bash
+# pin a release tag
+curl … | VERSION=v0.2.0 sh
+
+# install somewhere else
+curl … | PREFIX=$HOME/bin sh
+
+# override the node's display name (default: hostname -s)
+curl … | NAME=davids-laptop sh
+
+# don't touch ~/.claude.json
+curl … | SKIP_REGISTER=1 sh
+
+# point at a different Claude config file (e.g. for testing)
+curl … | CLAUDE_CONFIG=/path/to/file.json sh
+```
 
 **From source** (Go 1.22+):
 
@@ -61,25 +74,9 @@ curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | VERSION=v0.2.
 git clone https://github.com/BlueHeisenberg/agentmesh.git
 cd agentmesh
 go build -o agentmesh ./cmd/agentmesh
-./agentmesh whoami       # generates ~/.agentmesh/identity.json on first run
 ```
 
 </details>
-
-Then point your harness at it. For Claude Code, add to `~/.claude.json` (or a project `.mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "agentmesh": {
-      "command": "/absolute/path/to/agentmesh",
-      "args": ["serve", "--name=your-laptop"]
-    }
-  }
-}
-```
-
-Restart the harness. The agent now has eight `mesh_*` tools.
 
 ## Quick start
 
