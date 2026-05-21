@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	Version       = "0.2.1"
+	Version       = "0.2.2"
 	PeerNmHeader  = "X-Agentmesh-Peer-Name"
 	defaultClient = 30 * time.Second
 )
@@ -48,13 +48,18 @@ type Server struct {
 	srv      *http.Server
 }
 
-// Start binds to 127.0.0.1:0 OR :0 (LAN-wide). The advertised port is returned.
+// Start binds to 127.0.0.1:0 OR 0.0.0.0:0 (LAN-wide) on IPv4. Returns the
+// advertised port. We pin "tcp4" because macOS defaults IPV6_V6ONLY=1, which
+// turned `net.Listen("tcp", ":0")` into an IPv6-only listener — and our mDNS
+// advertisement only ships A (IPv4) records, so peers connecting to the
+// advertised address would get "connection refused". IPv4-only also matches
+// the peer-address picker, which filters to IPv4 candidates.
 func (s *Server) Start(bindAll bool) (int, error) {
 	addr := "127.0.0.1:0"
 	if bindAll {
-		addr = ":0"
+		addr = "0.0.0.0:0"
 	}
-	lis, err := net.Listen("tcp", addr)
+	lis, err := net.Listen("tcp4", addr)
 	if err != nil {
 		return 0, err
 	}
