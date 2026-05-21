@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>A tiny mesh so your agents can find each other on the LAN.</strong><br>
+  <strong>A tiny mesh so your agents can talk to each other on the LAN.</strong><br>
   <em>mDNS discovery · mTLS over Ed25519 · MCP-native · ~1.5k LOC of Go.</em>
 </p>
 
@@ -19,7 +19,7 @@
 
 ## The problem
 
-You're running two harnessed agents — Claude Code on your laptop, Claude Code on a teammate's, maybe one in a VM. Each one has *its* context, *its* files, *its* memory. There is no way for them to **see each other**, let alone hand off a file, ask a question, or coordinate without going through the cloud.
+You're running two harnessed agents — Claude Code on your laptop, Claude Code on a teammate's, maybe one in a VM. Each one has *its* context, *its* files, *its* memory. There is no way for them to **talk to each other**, let alone hand off a file, ask a question, or coordinate without going through the cloud.
 
 The internet is the wrong layer for this. The LAN is right there.
 

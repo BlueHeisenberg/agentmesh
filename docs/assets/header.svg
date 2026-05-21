@@ -31,7 +31,7 @@
   <rect x="40" y="186" width="120" height="3" fill="#F4F4F4"/>
 
   <!-- tagline -->
-  <text x="40" y="226" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="20" fill="#D6D6D6" letter-spacing="-0.2">a tiny mesh so your agents can find each other on the lan.</text>
+  <text x="40" y="226" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="20" fill="#D6D6D6" letter-spacing="-0.2">a tiny mesh so your agents can talk to each other on the lan.</text>
   <text x="40" y="252" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" fill="#8A8A8A" letter-spacing="0.6">mDNS discovery · mTLS over Ed25519 · MCP-native</text>
 
   <!-- right-side mesh diagram -->
