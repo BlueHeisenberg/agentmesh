@@ -139,10 +139,18 @@ func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 			name = strings.TrimPrefix(txt, "name=")
 		}
 	}
-	// Pick the first usable IPv4, fall back to IPv6.
+	// Pick the best routable IPv4. Peers can advertise multiple A records
+	// (one per interface), e.g. Windows with Hyper-V/WSL exposes a virtual
+	// switch like 172.27.x.x alongside the real Wi-Fi 192.168.x.x. We score
+	// candidates: a same-/24 match with one of our own interfaces wins,
+	// then /16, then anything; loopback and link-local are skipped.
 	var host string
 	if len(e.AddrIPv4) > 0 {
-		host = e.AddrIPv4[0].String()
+		ip := pickBestIPv4(e.AddrIPv4)
+		if ip == nil {
+			return Peer{}
+		}
+		host = ip.String()
 	} else if len(e.AddrIPv6) > 0 {
 		host = "[" + e.AddrIPv6[0].String() + "]"
 	} else {
@@ -154,4 +162,76 @@ func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 		Addr:     net.JoinHostPort(host, fmt.Sprintf("%d", e.Port)),
 		LastSeen: time.Now(),
 	}
+}
+
+func pickBestIPv4(candidates []net.IP) net.IP {
+	mine := localIPv4s()
+
+	usable := candidates[:0:0]
+	for _, c := range candidates {
+		c4 := c.To4()
+		if c4 == nil || c4.IsLoopback() || c4.IsLinkLocalUnicast() || c4.IsUnspecified() {
+			continue
+		}
+		usable = append(usable, c4)
+	}
+	if len(usable) == 0 {
+		return nil
+	}
+
+	// Best: same /24 as any of our local IPs.
+	for _, c := range usable {
+		for _, m := range mine {
+			if sameSubnet(c, m, 24) {
+				return c
+			}
+		}
+	}
+	// Second: same /16.
+	for _, c := range usable {
+		for _, m := range mine {
+			if sameSubnet(c, m, 16) {
+				return c
+			}
+		}
+	}
+	// Fallback: first usable.
+	return usable[0]
+}
+
+func sameSubnet(a, b net.IP, prefix int) bool {
+	a4, b4 := a.To4(), b.To4()
+	if a4 == nil || b4 == nil {
+		return false
+	}
+	mask := net.CIDRMask(prefix, 32)
+	return a4.Mask(mask).Equal(b4.Mask(mask))
+}
+
+// localIPv4s returns this host's non-loopback, non-link-local IPv4 addresses
+// across all up interfaces. Called per discovered peer — cheap enough.
+func localIPv4s() []net.IP {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []net.IP
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, _ := ifi.Addrs()
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+				continue
+			}
+			out = append(out, ip4)
+		}
+	}
+	return out
 }
