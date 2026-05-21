@@ -23,20 +23,33 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol =
   [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
+# Force UTF-8 console output so the ✓ / ✗ glyphs don't render as "?".
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
 # ---- pretty printing -----------------------------------------------------
+# Glyph fallback: if the host is plain Windows PowerShell on a non-UTF-8
+# code page, render with ASCII so output isn't garbled.
+$utf8 = ([Console]::OutputEncoding.WebName -eq 'utf-8')
+$G_OK   = if ($utf8) { '✓' } else { '+' }
+$G_FAIL = if ($utf8) { '✗' } else { 'X' }
 
 function Step    ($m) { Write-Host "::" -ForegroundColor DarkYellow -NoNewline; Write-Host " $m" }
-function OK      ($m) { Write-Host "✓"  -ForegroundColor Green       -NoNewline; Write-Host " $m" }
-function Warn    ($m) { Write-Host "!"  -ForegroundColor DarkYellow  -NoNewline; Write-Host " $m" }
-function Die     ($m) { Write-Host "✗"  -ForegroundColor Red         -NoNewline; Write-Host " $m"; exit 1 }
+function OK      ($m) { Write-Host $G_OK   -ForegroundColor Green       -NoNewline; Write-Host " $m" }
+function Warn    ($m) { Write-Host "!"     -ForegroundColor DarkYellow  -NoNewline; Write-Host " $m" }
+function Die     ($m) { Write-Host $G_FAIL -ForegroundColor Red         -NoNewline; Write-Host " $m"; exit 1 }
 function Subtle  ($m) { Write-Host "    $m" -ForegroundColor DarkGray }
 
 # ---- detect arch ---------------------------------------------------------
-
-$arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture) {
-  'X64'   { 'amd64' }
-  'Arm64' { Die "windows/arm64 builds aren't published yet — install via WSL or build from source." }
-  default { Die "unsupported arch: $_" }
+# Use the environment variable — RuntimeInformation::ProcessArchitecture is
+# an enum that Windows PowerShell 5.1's `switch` doesn't string-coerce, which
+# made every machine match the default branch. PROCESSOR_ARCHITEW6432 wins if
+# we're running 32-bit PowerShell on 64-bit Windows.
+$archEnv = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = switch -Regex ($archEnv) {
+  '^(AMD64|EM64T|x64)$' { 'amd64'; break }
+  '^ARM64$'             { Die "windows/arm64 builds aren't published yet — install via WSL or build from source." }
+  '^x86$'               { Die "32-bit Windows isn't supported; please install 64-bit Windows." }
+  default               { Die "unsupported arch: '$archEnv'" }
 }
 
 $repo    = if ($env:REPO)    { $env:REPO }    else { 'BlueHeisenberg/agentmesh' }
