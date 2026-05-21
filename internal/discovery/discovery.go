@@ -145,7 +145,9 @@ func Browse(ctx context.Context, reg *Registry) error {
 			}()
 			_ = zeroconf.Browse(round, ServiceType, Domain, entries)
 			cancel()
-			close(entries)
+			// libp2p/zeroconf closes `entries` itself in params.done() on
+			// context cancel; do NOT close it here or we'll double-close
+			// and panic the process.
 			<-done
 			select {
 			case <-ctx.Done():
