@@ -38,35 +38,56 @@ One node per harness instance. The harness never talks to another harness direct
 
 ## Install
 
-One line. Linux & macOS, amd64 + arm64.
+One line. Both installers download the latest signed release, verify its sha256, drop the binary in place, and then ask you which harness(es) you want `agentmesh` wired into — Claude Code, Cursor, ChatGPT Codex (CLI), and/or Antigravity. The config files are edited safely (a `.bak` is written first; re-running is idempotent).
+
+**Linux & macOS** (amd64 + arm64)
 
 ```bash
 curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | sh
 ```
 
-The installer fetches the latest signed release, verifies the sha256 checksum, drops the binary into `/usr/local/bin` (or `~/.local/bin`), and **registers itself with Claude Code** by adding an `agentmesh` entry to `~/.claude.json` (with a `.bak` backup of your existing config). Open any Claude Code session after that and the eight `mesh_*` tools are just there — no `agentmesh serve` to remember, no config to paste.
+**Windows** (amd64, PowerShell 5.1+)
 
-Idempotent — re-running won't duplicate anything.
+```powershell
+iwr -useb https://blueheisenberg.github.io/agentmesh/install.ps1 | iex
+```
+
+When prompted, pick one or more:
+
+```
+  1) claude code     ~/.claude.json
+  2) cursor          ~/.cursor/mcp.json
+  3) chatgpt codex   ~/.codex/config.toml
+  4) antigravity     ~/.gemini/antigravity/mcp_config.json
+  5) all of the above
+  6) none — I'll do it manually
+```
+
+Open the harness afterwards and the eight `mesh_*` tools are just there.
 
 <details>
-<summary>Knobs & opt-outs</summary>
+<summary>Knobs & non-interactive use</summary>
+
+Pass env vars to **`sh`**, not `curl`:
 
 ```bash
-# pin a release tag
-curl … | VERSION=v0.2.0 sh
-
-# install somewhere else
-curl … | PREFIX=$HOME/bin sh
-
-# override the node's display name (default: hostname -s)
-curl … | NAME=davids-laptop sh
-
-# don't touch ~/.claude.json
-curl … | SKIP_REGISTER=1 sh
-
-# point at a different Claude config file (e.g. for testing)
-curl … | CLAUDE_CONFIG=/path/to/file.json sh
+curl … | HARNESS=claude,cursor VERSION=v0.2.0 NAME=davids-laptop sh
 ```
+
+PowerShell variant — set `$env:*` before piping into `iex`:
+
+```powershell
+$env:HARNESS='claude,cursor'; iwr -useb https://blueheisenberg.github.io/agentmesh/install.ps1 | iex
+```
+
+| Var | Purpose |
+|---|---|
+| `HARNESS` | comma list — `claude`, `cursor`, `codex`, `antigravity`, `all`, `none` |
+| `VERSION` | pin a release tag (default: latest) |
+| `PREFIX` | install dir (Unix default: `/usr/local/bin` or `~/.local/bin`; Windows default: `%LOCALAPPDATA%\Programs\agentmesh`) |
+| `NAME` | node display name (default: short hostname) |
+| `SKIP_REGISTER` | skip harness registration entirely |
+| `CLAUDE_CONFIG` / `CURSOR_CONFIG` / `CODEX_CONFIG` / `ANTIGRAVITY_CONFIG` | override individual config paths |
 
 **From source** (Go 1.22+):
 

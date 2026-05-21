@@ -558,23 +558,41 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <section id="install">
     <p class="section-label"><span class="num">// 02</span>install</p>
     <h2>One line. Then it's just there.</h2>
-    <p>The installer downloads the latest signed release for your OS/arch, verifies its sha256, drops the binary into <code>/usr/local/bin</code>, and <em>registers itself with Claude Code</em> by adding an <code>agentmesh</code> entry to <code>~/.claude.json</code> (with a backup of whatever was there). Open any Claude Code session afterwards and the eight <code>mesh_*</code> tools are already wired up — nothing to start, nothing to remember.</p>
+    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and asks which harness(es) to register with — Claude Code, Cursor, ChatGPT Codex, Antigravity, or all four. Open the harness afterwards and the eight <code>mesh_*</code> tools are already wired up.</p>
 
     <div class="code">
       <div class="code-head">
-        <span><span class="dots"><i></i><i></i><i></i></span>install</span>
+        <span><span class="dots"><i></i><i></i><i></i></span>linux / macOS</span>
         <button class="copy-btn" data-target="install-sh">copy</button>
       </div>
 <pre id="install-sh"><span class="prompt">$</span> curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | sh</pre>
     </div>
 
+    <div class="code">
+      <div class="code-head">
+        <span><span class="dots"><i></i><i></i><i></i></span>windows · powershell</span>
+        <button class="copy-btn" data-target="install-ps">copy</button>
+      </div>
+<pre id="install-ps"><span class="prompt">PS&gt;</span> iwr -useb https://blueheisenberg.github.io/agentmesh/install.ps1 | iex</pre>
+    </div>
+
+    <pre class="ascii" style="margin-top:18px;text-align:left;">  <span class="amber">Where should I register agentmesh?</span>
+    <span class="amber">1</span>) claude code     <span class="hl">~/.claude.json</span>
+    <span class="amber">2</span>) cursor          <span class="hl">~/.cursor/mcp.json</span>
+    <span class="amber">3</span>) chatgpt codex   <span class="hl">~/.codex/config.toml</span>
+    <span class="amber">4</span>) antigravity     <span class="hl">~/.gemini/antigravity/mcp_config.json</span>
+    <span class="amber">5</span>) all of the above
+    <span class="amber">6</span>) none — I'll do it manually
+  <span style="opacity:.6">choose (comma-separated, e.g. 1,2) [default: 1]:</span> _
+</pre>
+
     <p class="muted" style="margin-top:18px;">
-      Knobs (pass to <code>sh</code>, not <code>curl</code>):
+      Non-interactive? Pass env vars to <code>sh</code> / set <code>$env:</code> before <code>iex</code>:
+      <code>HARNESS=claude,cursor</code>,
       <code>VERSION=v0.2.0</code>,
-      <code>PREFIX=$HOME/bin</code>,
       <code>NAME=davids-laptop</code>,
       <code>SKIP_REGISTER=1</code>.
-      Idempotent — safe to re-run.
+      Idempotent — safe to re-run; a <code>.bak</code> of every config is written before any edit.
     </p>
 
     <p style="margin-top:24px;">
