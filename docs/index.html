@@ -557,21 +557,22 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <!-- INSTALL ────────────────────────────────────────────────── -->
   <section id="install">
     <p class="section-label"><span class="num">// 02</span>install</p>
-    <h2>Build &amp; point your harness at it.</h2>
-    <p>Requires Go 1.22+. The binary ships as a single static file.</p>
+    <h2>One line. No dependencies.</h2>
+    <p>Linux &amp; macOS, amd64 + arm64. Fetches the latest signed release, verifies its sha256, drops the binary in <code>/usr/local/bin</code> (or <code>~/.local/bin</code> as a fallback).</p>
 
     <div class="code">
       <div class="code-head">
-        <span><span class="dots"><i></i><i></i><i></i></span>shell</span>
+        <span><span class="dots"><i></i><i></i><i></i></span>install</span>
         <button class="copy-btn" data-target="install-sh">copy</button>
       </div>
-<pre id="install-sh"><span class="prompt">$</span> git clone git@github.com:BlueHeisenberg/agentmesh.git
-<span class="prompt">$</span> cd agentmesh
-<span class="prompt">$</span> go build -o agentmesh ./cmd/agentmesh
-<span class="prompt">$</span> ./agentmesh whoami
-<span class="comment"># peer_id: 4e3f7a91d8c01b2c…</span>
-<span class="comment"># name:    davids-laptop</span></pre>
+<pre id="install-sh"><span class="prompt">$</span> curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | sh</pre>
     </div>
+
+    <p class="muted" style="margin-top:18px;">
+      Want to pin a version or change the install dir?
+      <code>VERSION=v0.2.0 PREFIX=$HOME/bin curl … | sh</code>.
+      From source: <code>go build -o agentmesh ./cmd/agentmesh</code>.
+    </p>
 
     <p style="margin-top:24px;">
       Then add to your harness's MCP config. For Claude Code, <code>~/.claude.json</code>:

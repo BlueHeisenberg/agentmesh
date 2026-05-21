@@ -38,14 +38,29 @@ One node per harness instance. The harness never talks to another harness direct
 
 ## Install
 
-Requires Go 1.22+.
+**One-liner** (Linux / macOS, amd64 + arm64 — fetches the latest signed release, verifies sha256, drops the binary in `/usr/local/bin` or `~/.local/bin`):
 
 ```bash
-git clone git@github.com:BlueHeisenberg/agentmesh.git
+curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | sh
+```
+
+Want to pin a version or change the install dir? `VERSION=v0.2.0 PREFIX=$HOME/bin curl … | sh`.
+
+<details>
+<summary>Other install paths</summary>
+
+**From a release archive** — grab one from <a href="https://github.com/BlueHeisenberg/agentmesh/releases/latest">releases</a> and extract.
+
+**From source** (Go 1.22+):
+
+```bash
+git clone https://github.com/BlueHeisenberg/agentmesh.git
 cd agentmesh
 go build -o agentmesh ./cmd/agentmesh
 ./agentmesh whoami       # generates ~/.agentmesh/identity.json on first run
 ```
+
+</details>
 
 Then point your harness at it. For Claude Code, add to `~/.claude.json` (or a project `.mcp.json`):
 
