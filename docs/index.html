@@ -569,9 +569,9 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
     </div>
 
     <p class="muted" style="margin-top:18px;">
-      Want to pin a version or change the install dir?
-      <code>VERSION=v0.2.0 PREFIX=$HOME/bin curl … | sh</code>.
-      From source: <code>go build -o agentmesh ./cmd/agentmesh</code>.
+      Want to pin a version or change the install dir? Pass env vars to <code>sh</code>:<br>
+      <code>curl … | VERSION=v0.2.0 PREFIX=$HOME/bin sh</code>.
+      Or from source: <code>go build -o agentmesh ./cmd/agentmesh</code>.
     </p>
 
     <p style="margin-top:24px;">

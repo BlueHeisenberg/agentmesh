@@ -44,7 +44,11 @@ One node per harness instance. The harness never talks to another harness direct
 curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | sh
 ```
 
-Want to pin a version or change the install dir? `VERSION=v0.2.0 PREFIX=$HOME/bin curl … | sh`.
+Want to pin a version or change the install dir? Pass the env vars to `sh`, not `curl`:
+
+```bash
+curl -fsSL https://blueheisenberg.github.io/agentmesh/install.sh | VERSION=v0.2.0 PREFIX=$HOME/bin sh
+```
 
 <details>
 <summary>Other install paths</summary>
