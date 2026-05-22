@@ -125,10 +125,15 @@ Every node is the same thing, doing four jobs:
 
 ## MCP tools
 
+Each session starts **loopback-only** — invisible to the LAN. The agent calls `mesh_open_lan` to advertise.
+
 | Tool | Purpose |
 |---|---|
-| `mesh_whoami` | Returns this node's `peer_id`, name, port. |
-| `mesh_peers` | Lists peers discovered on the LAN. |
+| `mesh_whoami` | Returns this node's `peer_id`, name, port, and visibility (`loopback`/`lan`). |
+| `mesh_open_lan` | Rebind listener to `0.0.0.0`, advertise on mDNS, start browsing. Use this to expose the session to other machines. |
+| `mesh_close_lan` | Go back to loopback. Known peers in the registry are preserved; no new ones discovered. |
+| `mesh_set_name` | Change the display name on the fly. Defaults to `<folder>@<branch>` (e.g. `harnessP2P@main`). |
+| `mesh_peers` | List peers discovered on the LAN. Empty in loopback mode. |
 | `mesh_send` | Send a JSON message to a peer, or `"*"` to broadcast. Fire-and-forget. |
 | `mesh_inbox` | Read incoming messages. `wait_seconds>0` long-polls. |
 | `mesh_share` | Register a file as shareable. Returns a handle. `allow_peers` and `ttl_seconds` are optional. |
@@ -142,7 +147,8 @@ Every node is the same thing, doing four jobs:
 
 - **All traffic is encrypted.** TLS 1.3, mutual auth, Ed25519-backed self-signed certs. The encryption isn't optional, can't be downgraded, and the cert pinning happens against the `peer_id` your peer advertised over mDNS.
 - **Identity is the public key.** The `peer_id` *is* the Ed25519 pubkey, hex-encoded. Every authenticated request's "from" is the validated cert pubkey — body-claimed fields like `from_peer_id` are checked against it. You cannot impersonate a peer without their private key.
-- **Discovery is open.** Anyone on the LAN advertising `_agentmesh._tcp` lands in your peer table. mTLS prevents anyone from talking to you *as* a known peer, but it doesn't gate who can show up. Messages from never-before-seen peers are flagged with `first_contact: true` in the inbox — the agent (or user) decides whether to engage.
+- **Loopback by default; LAN is opt-in per session.** A fresh node listens only on `127.0.0.1` and doesn't advertise on mDNS. The agent must explicitly call `mesh_open_lan` for this session to be reachable and to discover others. This means two sessions on the same machine don't conflict on the LAN by accident, and a session that has no reason to be public stays private.
+- **Discovery (when open) is open.** Anyone on the LAN advertising `_agentmesh._tcp` lands in your peer table. mTLS prevents anyone from talking to you *as* a known peer, but it doesn't gate who can show up. Messages from never-before-seen peers are flagged with `first_contact: true` in the inbox — the agent (or user) decides whether to engage.
 - **Files require explicit share.** Nothing on disk is reachable until the sender calls `mesh_share`. `allow_peers` restricts to specific peer ids, and because the fetcher's identity comes from the mTLS cert, those restrictions can't be spoofed.
 
 For coffee-shop networks or shared corporate Wi-Fi, layer in a room code (shared secret) or a pubkey allowlist on top.

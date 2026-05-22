@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -20,24 +21,186 @@ import (
 	"github.com/BlueHeisenberg/agentmesh/internal/transport"
 )
 
+// Visibility describes whether this node is reachable on the LAN.
+//
+//	"loopback"  — listener bound to 127.0.0.1, no mDNS advertise, no browse.
+//	              the default at startup. invisible to other machines.
+//	"lan"       — listener on 0.0.0.0, advertised on mDNS, actively browsing.
+//	              enabled by the agent calling mesh_open_lan.
+const (
+	VisibilityLoopback = "loopback"
+	VisibilityLAN      = "lan"
+)
+
 // Node holds all the runtime state the MCP tools touch.
 type Node struct {
-	ID       *identity.Identity
-	Port     int
-	Inbox    *inbox.Inbox
-	Peers    *discovery.Registry
-	Shares   *shares.Registry
-	Client   *transport.Client
+	ID     *identity.Identity
+	Inbox  *inbox.Inbox
+	Peers  *discovery.Registry
+	Shares *shares.Registry
+	Server *transport.Server
+	Client *transport.Client
+
+	mu           sync.Mutex
+	displayName  string
+	port         int
+	visibility   string             // VisibilityLoopback | VisibilityLAN
+	mdnsStop     func()             // nil unless advertising
+	browseCancel context.CancelFunc // nil unless browsing
+}
+
+// MarkInitialLoopback records the bind port for the listener main() created
+// at startup and sets visibility=loopback. Called once before MCP serving.
+func (n *Node) MarkInitialLoopback(port int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.port = port
+	n.visibility = VisibilityLoopback
+}
+
+// SetName overrides the display name and re-advertises on mDNS if currently
+// in LAN mode. Safe to call before or after OpenLAN.
+func (n *Node) SetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name must not be empty")
+	}
+	n.mu.Lock()
+	n.displayName = name
+	n.Server.SelfName = name
+	n.Client.SelfName = name
+	needReannounce := n.visibility == VisibilityLAN
+	n.mu.Unlock()
+	if !needReannounce {
+		return nil
+	}
+	// Re-advertise on mDNS so peers see the new name.
+	return n.reannounceLocked()
+}
+
+// reannounceLocked stops the existing mDNS Register and starts a new one with
+// current name+port. Must be called outside the node mutex.
+func (n *Node) reannounceLocked() error {
+	n.mu.Lock()
+	stop := n.mdnsStop
+	name := n.displayName
+	port := n.port
+	n.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	newStop, err := discovery.Advertise(name, n.ID.PeerID(), port)
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	n.mdnsStop = newStop
+	n.mu.Unlock()
+	return nil
+}
+
+// OpenLAN rebinds the listener to 0.0.0.0, starts mDNS advertising, and starts
+// browsing for peers. Idempotent. Returns the new port.
+func (n *Node) OpenLAN() (int, error) {
+	n.mu.Lock()
+	if n.visibility == VisibilityLAN {
+		port := n.port
+		n.mu.Unlock()
+		return port, nil
+	}
+	n.mu.Unlock()
+
+	newPort, err := n.Server.Rebind(true)
+	if err != nil {
+		return 0, fmt.Errorf("rebind: %w", err)
+	}
+	n.mu.Lock()
+	n.port = newPort
+	name := n.displayName
+	n.mu.Unlock()
+
+	stop, err := discovery.Advertise(name, n.ID.PeerID(), newPort)
+	if err != nil {
+		return 0, fmt.Errorf("mdns advertise: %w", err)
+	}
+
+	bctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		if err := discovery.Browse(bctx, n.Peers); err != nil && bctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "agentmesh: browse: %v\n", err)
+		}
+	}()
+
+	n.mu.Lock()
+	n.mdnsStop = stop
+	n.browseCancel = cancel
+	n.visibility = VisibilityLAN
+	n.mu.Unlock()
+	return newPort, nil
+}
+
+// CloseLAN goes back to loopback: stops mDNS advertise/browse, rebinds the
+// listener to 127.0.0.1. The peer table is left intact (so messages can still
+// be sent to peers we already discovered), but no new peers will be found and
+// no other machine can reach us.
+func (n *Node) CloseLAN() (int, error) {
+	n.mu.Lock()
+	if n.visibility == VisibilityLoopback {
+		port := n.port
+		n.mu.Unlock()
+		return port, nil
+	}
+	stop := n.mdnsStop
+	cancel := n.browseCancel
+	n.mdnsStop = nil
+	n.browseCancel = nil
+	n.mu.Unlock()
+
+	if stop != nil {
+		stop()
+	}
+	if cancel != nil {
+		cancel()
+	}
+
+	newPort, err := n.Server.Rebind(false)
+	if err != nil {
+		return 0, fmt.Errorf("rebind: %w", err)
+	}
+	n.mu.Lock()
+	n.port = newPort
+	n.visibility = VisibilityLoopback
+	n.mu.Unlock()
+	return newPort, nil
+}
+
+// Snapshot returns a copy of the externally-visible state for whoami.
+func (n *Node) Snapshot() (name, visibility string, port int) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.displayName, n.visibility, n.port
 }
 
 func (n *Node) Register(s *server.MCPServer) {
 	s.AddTool(mcplib.NewTool("mesh_whoami",
-		mcplib.WithDescription("Return this node's peer id, display name, and local HTTP address."),
+		mcplib.WithDescription("Return this node's peer id, display name, port, and visibility (loopback or lan). Loopback means this node is invisible to other machines — call mesh_open_lan to advertise on the LAN."),
 	), n.whoami)
 
 	s.AddTool(mcplib.NewTool("mesh_peers",
-		mcplib.WithDescription("List peers discovered on the local network."),
+		mcplib.WithDescription("List peers discovered on the LAN. Returns [] when this node is in loopback mode (call mesh_open_lan to start discovering peers)."),
 	), n.peers)
+
+	s.AddTool(mcplib.NewTool("mesh_open_lan",
+		mcplib.WithDescription("Open this node to the LAN: rebind the listener to all interfaces, advertise via mDNS, and start browsing for peers. Call this when you want this session to be reachable by other machines and to discover them. Default startup is loopback-only."),
+	), n.openLAN)
+
+	s.AddTool(mcplib.NewTool("mesh_close_lan",
+		mcplib.WithDescription("Go back to loopback: stop mDNS advertising and browsing, rebind the listener to 127.0.0.1. Known peers in the registry are kept, but no new peers will be found and other machines can no longer reach this node."),
+	), n.closeLAN)
+
+	s.AddTool(mcplib.NewTool("mesh_set_name",
+		mcplib.WithDescription("Set this node's display name. Other peers will see this name in their mesh_peers output. Defaults to the working directory + git branch (e.g. \"harnessP2P@main\"); override when you want a more descriptive label for what this session is doing."),
+		mcplib.WithString("name", mcplib.Required(), mcplib.Description("New display name. Should be short and recognisable.")),
+	), n.setName)
 
 	s.AddTool(mcplib.NewTool("mesh_send",
 		mcplib.WithDescription("Send a JSON message to a peer (or broadcast). Fire-and-forget."),
@@ -118,12 +281,59 @@ func argStringSlice(req mcplib.CallToolRequest, key string) []string {
 // --- tool handlers ---
 
 func (n *Node) whoami(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	name, vis, port := n.Snapshot()
+	out := map[string]any{
+		"peer_id":    n.ID.PeerID(),
+		"name":       name,
+		"port":       port,
+		"visibility": vis,
+		"version":    transport.Version,
+	}
+	if vis == VisibilityLoopback {
+		out["hint"] = "This node is loopback-only — no other machine can reach it and mesh_peers will be empty. Call mesh_open_lan to advertise on the LAN."
+	}
+	return jsonResult(out)
+}
+
+func (n *Node) openLAN(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	port, err := n.OpenLAN()
+	if err != nil {
+		return errResult(err.Error())
+	}
+	name, vis, _ := n.Snapshot()
 	return jsonResult(map[string]any{
-		"peer_id": n.ID.PeerID(),
-		"name":    n.ID.Name,
-		"port":    n.Port,
-		"version": transport.Version,
+		"visibility": vis,
+		"port":       port,
+		"name":       name,
+		"peer_id":    n.ID.PeerID(),
+		"message":    "Now reachable on the LAN. Other agentmesh nodes will discover this peer within a few seconds.",
 	})
+}
+
+func (n *Node) closeLAN(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	port, err := n.CloseLAN()
+	if err != nil {
+		return errResult(err.Error())
+	}
+	name, vis, _ := n.Snapshot()
+	return jsonResult(map[string]any{
+		"visibility": vis,
+		"port":       port,
+		"name":       name,
+		"peer_id":    n.ID.PeerID(),
+		"message":    "Back on loopback — invisible to other machines. Known peers are preserved.",
+	})
+}
+
+func (n *Node) setName(_ context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	name := argString(req, "name", "")
+	if name == "" {
+		return errResult("`name` is required")
+	}
+	if err := n.SetName(name); err != nil {
+		return errResult(err.Error())
+	}
+	return jsonResult(map[string]any{"name": name, "ok": true})
 }
 
 func (n *Node) peers(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {

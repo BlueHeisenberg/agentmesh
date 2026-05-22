@@ -558,7 +558,7 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <section id="install">
     <p class="section-label"><span class="num">// 02</span>install</p>
     <h2>One line. Then it's just there.</h2>
-    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and asks which harness(es) to register with — Claude Code, Cursor, ChatGPT Codex, Antigravity, or all four. Open the harness afterwards and the eight <code>mesh_*</code> tools are already wired up.</p>
+    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and asks which harness(es) to register with — Claude Code, Cursor, ChatGPT Codex, Antigravity, or any combination — through an interactive checkbox menu (arrows, space, enter). Re-running the one-liner detects an existing install and just refreshes the binary unless you pass <code>RECONFIGURE=1</code>. Each new session starts loopback-only; the agent calls <code>mesh_open_lan</code> when it wants to expose itself.</p>
 
     <div class="code">
       <div class="code-head">

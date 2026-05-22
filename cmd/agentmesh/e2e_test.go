@@ -33,7 +33,9 @@ type rpc struct {
 
 func startNode(t *testing.T, home, name string) *rpc {
 	t.Helper()
-	cmd := exec.Command("./agentmesh-test", "serve", "--name="+name)
+	// --open-lan: the default is loopback-only since v0.3.0; the test needs
+	// the nodes to advertise on mDNS straight away.
+	cmd := exec.Command("./agentmesh-test", "serve", "--open-lan", "--name="+name)
 	cmd.Env = append(os.Environ(), "AGENTMESH_HOME="+home)
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()

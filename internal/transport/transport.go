@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BlueHeisenberg/agentmesh/internal/inbox"
@@ -32,7 +33,7 @@ import (
 )
 
 const (
-	Version       = "0.2.4"
+	Version       = "0.3.0"
 	PeerNmHeader  = "X-Agentmesh-Peer-Name"
 	defaultClient = 30 * time.Second
 )
@@ -44,8 +45,24 @@ type Server struct {
 	Inbox      *inbox.Inbox
 	Shares     *shares.Registry
 
+	mu       sync.Mutex
 	listener net.Listener
 	srv      *http.Server
+}
+
+// Rebind shuts down any existing listener and re-binds with the new scope.
+// Returns the new port. Safe to call while the server is running.
+func (s *Server) Rebind(bindAll bool) (int, error) {
+	s.mu.Lock()
+	if s.srv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = s.srv.Shutdown(ctx)
+		cancel()
+		s.srv = nil
+		s.listener = nil
+	}
+	s.mu.Unlock()
+	return s.Start(bindAll)
 }
 
 // Start binds to 127.0.0.1:0 OR 0.0.0.0:0 (LAN-wide) on IPv4. Returns the
@@ -78,8 +95,7 @@ func (s *Server) Start(bindAll bool) (int, error) {
 		MinVersion:            tls.VersionTLS13,
 	}
 
-	s.listener = lis
-	s.srv = &http.Server{
+	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig:         tlsCfg,
@@ -87,9 +103,14 @@ func (s *Server) Start(bindAll bool) (int, error) {
 			return ctx // peer info is attached via TLS state on each request
 		},
 	}
+	s.mu.Lock()
+	s.listener = lis
+	s.srv = srv
+	s.mu.Unlock()
+
 	go func() {
 		// ServeTLS with empty cert/key paths uses TLSConfig.Certificates.
-		if err := s.srv.ServeTLS(lis, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.ServeTLS(lis, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintf(os.Stderr, "agentmesh: https server: %v\n", err)
 		}
 	}()

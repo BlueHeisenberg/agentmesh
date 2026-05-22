@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -59,6 +60,67 @@ func (i *Identity) TLSCertificate() (tls.Certificate, error) {
 		PrivateKey:  i.PrivateKey,
 		Leaf:        leaf,
 	}, nil
+}
+
+// DefaultDisplayName picks a meaningful name for this agentmesh instance
+// based on the current working directory and git branch — the place the
+// harness was launched from. Examples:
+//
+//	~/projects/harnessP2P   on branch main         -> "harnessP2P@main"
+//	~/projects/harnessP2P   no git                 -> "harnessP2P"
+//	/                       (root, weird)          -> hostname or "anonymous"
+//
+// Falls back to the machine hostname if CWD can't be read or yields nothing
+// useful. Used when the binary is invoked without an explicit --name flag.
+func DefaultDisplayName() string {
+	host, _ := os.Hostname()
+
+	wd, err := os.Getwd()
+	if err != nil || wd == "" {
+		return fallbackName(host)
+	}
+	base := filepath.Base(wd)
+	if base == "/" || base == "." || base == "" {
+		return fallbackName(host)
+	}
+
+	if branch := gitBranchAt(wd); branch != "" {
+		return base + "@" + branch
+	}
+	return base
+}
+
+func fallbackName(host string) string {
+	if host != "" {
+		// Strip the trailing ".local" mDNS hosts often carry on macOS.
+		return strings.TrimSuffix(host, ".local")
+	}
+	return "anonymous"
+}
+
+// gitBranchAt walks up from dir looking for a .git directory and reads HEAD
+// without shelling out to git (so we don't depend on git being installed).
+// Returns the branch name, a short detached HEAD hash, or "".
+func gitBranchAt(dir string) string {
+	for i := 0; i < 20; i++ { // bounded walk; abandon if we get nowhere
+		head := filepath.Join(dir, ".git", "HEAD")
+		if data, err := os.ReadFile(head); err == nil {
+			s := strings.TrimSpace(string(data))
+			if strings.HasPrefix(s, "ref: refs/heads/") {
+				return strings.TrimPrefix(s, "ref: refs/heads/")
+			}
+			if len(s) >= 7 {
+				return s[:7] // detached HEAD
+			}
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+	return ""
 }
 
 func Home() (string, error) {
