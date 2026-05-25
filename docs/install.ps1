@@ -87,9 +87,53 @@ if (Test-AgentmeshIn $cursorCfg      'json')  { $existing += 'cursor' }
 if (Test-AgentmeshIn $codexCfg       'codex') { $existing += 'codex' }
 if (Test-AgentmeshIn $antigravityCfg 'json')  { $existing += 'antigravity' }
 
+# ---- discover prior install path from existing JSON configs --------------
+#
+# If a harness config already points at an agentmesh binary, prefer that
+# directory as the default $prefix so the refreshed binary lands where the
+# harness already launches from. $env:PREFIX still overrides explicitly.
+# Codex (TOML) is intentionally skipped here.
+
+function Get-AgentmeshCommandFromJson($path) {
+  if (-not (Test-Path $path)) { return $null }
+  try {
+    $raw = Get-Content -Raw -Path $path -Encoding UTF8 -ErrorAction SilentlyContinue
+    if (-not $raw -or -not $raw.Trim()) { return $null }
+    $data = $raw | ConvertFrom-Json
+  } catch { return $null }
+  if (-not $data) { return $null }
+  if (-not $data.PSObject.Properties.Match('mcpServers').Count) { return $null }
+  $servers = $data.mcpServers
+  if (-not $servers) { return $null }
+  if (-not $servers.PSObject.Properties.Match('agentmesh').Count) { return $null }
+  $entry = $servers.agentmesh
+  if (-not $entry) { return $null }
+  if (-not $entry.PSObject.Properties.Match('command').Count) { return $null }
+  return [string]$entry.command
+}
+
+$discoveredPrefix = $null
+foreach ($cfgPath in @($claudeCfg, $cursorCfg, $antigravityCfg)) {
+  $cmd = Get-AgentmeshCommandFromJson $cfgPath
+  if ($cmd) {
+    $parent = Split-Path -Parent $cmd
+    if ($parent) {
+      $discoveredPrefix = $parent
+      break
+    }
+  }
+}
+
 # ---- install dir ----------------------------------------------------------
 
-$prefix = if ($env:PREFIX) { $env:PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\agentmesh' }
+if ($env:PREFIX) {
+  $prefix = $env:PREFIX
+} elseif ($discoveredPrefix) {
+  Step "using existing install path: $discoveredPrefix"
+  $prefix = $discoveredPrefix
+} else {
+  $prefix = Join-Path $env:LOCALAPPDATA 'Programs\agentmesh'
+}
 New-Item -ItemType Directory -Path $prefix -Force | Out-Null
 
 # ---- download + verify ---------------------------------------------------
@@ -152,10 +196,150 @@ if ($env:SKIP_REGISTER) {
   return
 }
 
+# ---- cleanup: strip stale v0.3 --name=<hostname> args --------------------
+#
+# v0.3 installers wrote args = ["serve", "--name=DESKTOP-XXXX"], which the
+# v0.4 binary still honors instead of its new auto-derived default. Remove
+# only the elements that look like the v0.3 hostname default; never strip
+# names the user picked themselves.
+
+function Get-StaleNameCandidates {
+  $candidates = @()
+  $host1 = $env:COMPUTERNAME
+  if ($host1) {
+    $candidates += $host1
+    $candidates += "$host1.local"
+  }
+  try {
+    $sysHost = [System.Net.Dns]::GetHostName()
+    if ($sysHost) {
+      $bare = ($sysHost -split '\.')[0]
+      if ($bare -and ($candidates -notcontains $bare)) { $candidates += $bare }
+      if ($sysHost -and ($candidates -notcontains $sysHost)) { $candidates += $sysHost }
+    }
+  } catch { }
+  return $candidates
+}
+
+function Remove-StaleNameArg {
+  param([string]$Kind, [string]$ConfigPath)
+  if (-not (Test-Path $ConfigPath)) { return }
+  try {
+    $raw = Get-Content -Raw -Path $ConfigPath -Encoding UTF8 -ErrorAction SilentlyContinue
+  } catch { return }
+  if (-not $raw -or -not $raw.Trim()) { return }
+  try { $data = $raw | ConvertFrom-Json } catch { return }
+  if (-not $data) { return }
+  if (-not $data.PSObject.Properties.Match('mcpServers').Count) { return }
+  $servers = $data.mcpServers
+  if (-not $servers) { return }
+  if (-not $servers.PSObject.Properties.Match('agentmesh').Count) { return }
+  $entry = $servers.agentmesh
+  if (-not $entry) { return }
+  if (-not $entry.PSObject.Properties.Match('args').Count) { return }
+  $oldArgs = @($entry.args)
+  if ($oldArgs.Count -eq 0) { return }
+
+  $stale = Get-StaleNameCandidates
+  $newArgs = @()
+  $changed = $false
+  foreach ($a in $oldArgs) {
+    $s = [string]$a
+    if ($s -match '^--name=(.+)$') {
+      $val = $Matches[1]
+      if ($stale -contains $val) {
+        $changed = $true
+        continue
+      }
+    }
+    $newArgs += $a
+  }
+  if (-not $changed) { return }
+
+  Copy-Item $ConfigPath "$ConfigPath.bak" -Force
+  $entry.args = $newArgs
+  ($data | ConvertTo-Json -Depth 20) | Set-Content -Path $ConfigPath -Encoding UTF8
+  OK "cleaned stale --name from $ConfigPath"
+}
+
+if ($existing.Count -gt 0) {
+  if ($existing -contains 'claude')      { Remove-StaleNameArg 'claude'      $claudeCfg }
+  if ($existing -contains 'cursor')      { Remove-StaleNameArg 'cursor'      $cursorCfg }
+  if ($existing -contains 'antigravity') { Remove-StaleNameArg 'antigravity' $antigravityCfg }
+}
+
+# ---- claude hook registration --------------------------------------------
+# Defined here (above the fast path) so upgraders from v0.3 also get the
+# v0.4 UserPromptSubmit hook without re-running the harness picker.
+
+function Register-ClaudeHook {
+  param([string]$HooksPath, [string]$BinPath)
+  if ($env:SKIP_HOOK) {
+    Step "claude hook: skipped (`$env:SKIP_HOOK set)"
+    return
+  }
+  $cmdString = "$BinPath hook prompt-inject"
+  $dir = Split-Path -Parent $HooksPath
+  if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+  $existed = Test-Path $HooksPath
+  $data = $null
+  if ($existed) {
+    try {
+      $raw = Get-Content -Raw -Path $HooksPath -Encoding UTF8
+      if ($raw -and $raw.Trim()) { $data = $raw | ConvertFrom-Json }
+    } catch {
+      Warn "claude hook: $HooksPath isn't valid JSON - not touching it"; return
+    }
+  }
+  if ($null -eq $data) { $data = New-Object PSObject }
+
+  if (-not $data.PSObject.Properties.Match('hooks').Count) {
+    $data | Add-Member -NotePropertyName 'hooks' -NotePropertyValue (New-Object PSObject)
+  }
+  $hooksObj = $data.hooks
+  if (-not $hooksObj.PSObject.Properties.Match('UserPromptSubmit').Count) {
+    $hooksObj | Add-Member -NotePropertyName 'UserPromptSubmit' -NotePropertyValue (New-Object 'System.Collections.ArrayList')
+  }
+  # ConvertFrom-Json returns arrays as object[]; coerce to a mutable ArrayList.
+  $ups = New-Object 'System.Collections.ArrayList'
+  foreach ($e in $hooksObj.UserPromptSubmit) { [void]$ups.Add($e) }
+
+  # Idempotency: match the agentmesh binary anywhere + the trailing subcommand
+  foreach ($entry in $ups) {
+    if ($entry -is [PSObject] -and $entry.PSObject.Properties.Match('hooks').Count -gt 0) {
+      foreach ($inner in $entry.hooks) {
+        if ($inner -is [PSObject] -and `
+            $inner.command -like "*agentmesh*" -and `
+            $inner.command -like "* hook prompt-inject") {
+          OK "claude hook: already registered"; return
+        }
+      }
+    }
+  }
+
+  $newEntry = [PSCustomObject]@{
+    matcher = '*'
+    hooks   = @(
+      [PSCustomObject]@{ type = 'command'; command = $cmdString }
+    )
+  }
+  [void]$ups.Add($newEntry)
+  $hooksObj.UserPromptSubmit = $ups.ToArray()
+
+  if ($existed) { Copy-Item $HooksPath "$HooksPath.bak" -Force }
+  ($data | ConvertTo-Json -Depth 20) | Set-Content -Path $HooksPath -Encoding UTF8
+  if ($existed) { OK "claude hook: registered in $HooksPath (backup at $HooksPath.bak)" }
+  else          { OK "claude hook: created $HooksPath with UserPromptSubmit entry" }
+}
+
 # Fast path: already configured, no $env:RECONFIGURE -> just exit.
 if ($existing.Count -gt 0 -and -not $env:RECONFIGURE -and -not $env:HARNESS) {
   OK ("agentmesh already configured for: " + ($existing -join ', '))
   Subtle "re-run with `$env:RECONFIGURE=1; ... | iex to add/change harnesses"
+  if (($existing -contains 'claude') -and -not $env:SKIP_HOOK) {
+    Register-ClaudeHook $claudeHooks $target
+  }
   Write-Host ""
   Write-Host "You're done." -ForegroundColor White -NoNewline
   Write-Host " Restart the harness(es) above to pick up v$verNoV."
@@ -309,67 +493,6 @@ function Register-McpJson {
   Set-Content -Path $ConfigPath -Value $json -Encoding UTF8
   if ($existed) { OK "${Kind}: registered in $ConfigPath (backup at $ConfigPath.bak)" }
   else          { OK "${Kind}: created $ConfigPath with agentmesh entry" }
-}
-
-function Register-ClaudeHook {
-  param([string]$HooksPath, [string]$BinPath)
-  if ($env:SKIP_HOOK) {
-    Step "claude hook: skipped (`$env:SKIP_HOOK set)"
-    return
-  }
-  $cmdString = "$BinPath hook prompt-inject"
-  $dir = Split-Path -Parent $HooksPath
-  if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-
-  $existed = Test-Path $HooksPath
-  $data = $null
-  if ($existed) {
-    try {
-      $raw = Get-Content -Raw -Path $HooksPath -Encoding UTF8
-      if ($raw -and $raw.Trim()) { $data = $raw | ConvertFrom-Json }
-    } catch {
-      Warn "claude hook: $HooksPath isn't valid JSON - not touching it"; return
-    }
-  }
-  if ($null -eq $data) { $data = New-Object PSObject }
-
-  if (-not $data.PSObject.Properties.Match('hooks').Count) {
-    $data | Add-Member -NotePropertyName 'hooks' -NotePropertyValue (New-Object PSObject)
-  }
-  $hooksObj = $data.hooks
-  if (-not $hooksObj.PSObject.Properties.Match('UserPromptSubmit').Count) {
-    $hooksObj | Add-Member -NotePropertyName 'UserPromptSubmit' -NotePropertyValue (New-Object 'System.Collections.ArrayList')
-  }
-  # ConvertFrom-Json returns arrays as object[]; coerce to a mutable ArrayList.
-  $ups = New-Object 'System.Collections.ArrayList'
-  foreach ($e in $hooksObj.UserPromptSubmit) { [void]$ups.Add($e) }
-
-  # Idempotency: match the agentmesh binary anywhere + the trailing subcommand
-  foreach ($entry in $ups) {
-    if ($entry -is [PSObject] -and $entry.PSObject.Properties.Match('hooks').Count -gt 0) {
-      foreach ($inner in $entry.hooks) {
-        if ($inner -is [PSObject] -and `
-            $inner.command -like "*agentmesh*" -and `
-            $inner.command -like "* hook prompt-inject") {
-          OK "claude hook: already registered"; return
-        }
-      }
-    }
-  }
-
-  $newEntry = [PSCustomObject]@{
-    matcher = '*'
-    hooks   = @(
-      [PSCustomObject]@{ type = 'command'; command = $cmdString }
-    )
-  }
-  [void]$ups.Add($newEntry)
-  $hooksObj.UserPromptSubmit = $ups.ToArray()
-
-  if ($existed) { Copy-Item $HooksPath "$HooksPath.bak" -Force }
-  ($data | ConvertTo-Json -Depth 20) | Set-Content -Path $HooksPath -Encoding UTF8
-  if ($existed) { OK "claude hook: registered in $HooksPath (backup at $HooksPath.bak)" }
-  else          { OK "claude hook: created $HooksPath with UserPromptSubmit entry" }
 }
 
 function Register-CodexToml {

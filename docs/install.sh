@@ -39,15 +39,25 @@ BIN="agentmesh"
 # mangle Unicode glyphs) ---------------------------------------------------
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  C_DIM='\033[2m'; C_BOLD='\033[1m'; C_AMBER='\033[38;5;179m'
-  C_GREEN='\033[38;5;108m'; C_RED='\033[38;5;167m'; C_OFF='\033[0m'
+  # Build the variables with literal ESC bytes inside them.  Single-quoting the
+  # \033 keeps them as the string "\033[..m", so when we later did
+  # `printf "...%s..." "$var"` the %s just prints the raw escape *text* - which
+  # is what showed up in the terminal in the v0.4.0 install.  Constructing via
+  # printf substitutes the actual ESC byte once, and POSIX sh interprets it
+  # correctly regardless of the format slot.
+  C_DIM=$(printf '\033[2m')
+  C_BOLD=$(printf '\033[1m')
+  C_AMBER=$(printf '\033[38;5;179m')
+  C_GREEN=$(printf '\033[38;5;108m')
+  C_RED=$(printf '\033[38;5;167m')
+  C_OFF=$(printf '\033[0m')
 else
   C_DIM=''; C_BOLD=''; C_AMBER=''; C_GREEN=''; C_RED=''; C_OFF=''
 fi
-info()  { printf "${C_AMBER}::${C_OFF} %s\n" "$*"; }
-ok()    { printf "${C_GREEN}[ok]${C_OFF} %s\n" "$*"; }
-warn()  { printf "${C_AMBER}[!] ${C_OFF}%s\n" "$*"; }
-die()   { printf "${C_RED}[x] ${C_OFF}%s\n" "$*" >&2; exit 1; }
+info()  { printf '%s::%s %s\n' "$C_AMBER" "$C_OFF" "$*"; }
+ok()    { printf '%s[ok]%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
+warn()  { printf '%s[!] %s%s\n'  "$C_AMBER" "$C_OFF" "$*"; }
+die()   { printf '%s[x] %s%s\n'  "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
 
 # ---- detect OS / arch ----------------------------------------------------
 
@@ -105,11 +115,61 @@ detect_existing() {
   EXISTING="$(echo "$EXISTING" | sed -E 's/^ +//;s/ +/ /g')"
 }
 
+# existing_install_path looks up the binary path the first-found existing
+# config points at, so a re-run of the installer drops the new binary in the
+# place the harness will actually launch it from (instead of picking an
+# unrelated default like /usr/local/bin and stranding the old binary in the
+# config-referenced path).
+existing_install_path() {
+  if command -v python3 >/dev/null 2>&1; then
+    for c in "$CLAUDE_CONFIG" "$CURSOR_CONFIG" "$ANTIGRAVITY_CONFIG"; do
+      [ -f "$c" ] || continue
+      p="$(python3 - "$c" <<'PYEOF' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    p = ((d.get("mcpServers") or {}).get("agentmesh") or {}).get("command", "")
+    if isinstance(p, str) and p:
+        print(p)
+except Exception:
+    pass
+PYEOF
+)"
+      [ -n "$p" ] && printf '%s' "$p" && return 0
+    done
+  fi
+  # Codex (TOML) fallback - naive but works for our format.
+  if [ -f "$CODEX_CONFIG" ]; then
+    p="$(awk '
+      /^\[mcp_servers\.agentmesh\]/ { inside=1; next }
+      /^\[/                          { inside=0 }
+      inside && /^command[[:space:]]*=/ {
+        sub(/^command[[:space:]]*=[[:space:]]*"/,"")
+        sub(/".*/,"")
+        print; exit
+      }' "$CODEX_CONFIG")"
+    [ -n "$p" ] && printf '%s' "$p"
+  fi
+}
+
 # ---- pick install dir ----------------------------------------------------
 
 SUDO=""
 if [ -z "${PREFIX:-}" ]; then
-  if [ -w /usr/local/bin ] 2>/dev/null; then
+  existing_path="$(existing_install_path)"
+  if [ -n "$existing_path" ]; then
+    # Install to where the existing config already says the binary lives, so
+    # the harness picks up the new version on next restart without any config
+    # rewriting.
+    PREFIX="$(dirname "$existing_path")"
+    info "using existing install dir ${C_BOLD}${PREFIX}${C_OFF}${C_DIM} (from harness config)${C_OFF}"
+    mkdir -p "$PREFIX" 2>/dev/null || true
+    if [ ! -w "$PREFIX" ] 2>/dev/null; then
+      if command -v sudo >/dev/null 2>&1; then
+        SUDO="sudo"
+      fi
+    fi
+  elif [ -w /usr/local/bin ] 2>/dev/null; then
     PREFIX="/usr/local/bin"
   elif command -v sudo >/dev/null 2>&1 && [ -d /usr/local/bin ]; then
     PREFIX="/usr/local/bin"
@@ -150,6 +210,11 @@ ok "checksum ok"
 tar -xzf "${tmp}/${archive}" -C "$tmp" "$BIN"
 chmod +x "${tmp}/${BIN}"
 info "installing to ${C_BOLD}${PREFIX}/${BIN}${C_OFF}"
+if [ -n "$SUDO" ]; then
+  # Heads-up before sudo asks for the password without any context.
+  printf '%s[sudo]%s writing to %s needs admin privileges; you may be prompted for your login password below.\n' "$C_AMBER" "$C_OFF" "$PREFIX"
+  printf '%s        (or pass PREFIX=$HOME/.local/bin to install without sudo)%s\n' "$C_DIM" "$C_OFF"
+fi
 ${SUDO} install -m 0755 "${tmp}/${BIN}" "${PREFIX}/${BIN}" \
   || die "install failed (try setting PREFIX=\$HOME/.local/bin)"
 ok "installed ${BIN} ${VERSION}"
@@ -175,11 +240,159 @@ if [ -n "${SKIP_REGISTER:-}" ]; then
 fi
 
 detect_existing
+bin_path="${PREFIX}/${BIN}"
+
+# clean_stale_name strips legacy "--name=<hostname>" args left over from the
+# v0.2/v0.3 installer. v0.4's binary auto-derives a much more useful default
+# ("<folder>@<branch>#<tag>"), but only if no explicit --name overrides it.
+# We only drop the arg if it matches the current hostname (in any obvious
+# form) - never strip a user-specified custom name.
+clean_stale_name() {
+  cfg="$1"
+  [ -f "$cfg" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  result="$(python3 - "$cfg" <<'PYEOF' 2>/dev/null
+import json, os, shutil, socket, sys
+cfg = sys.argv[1]
+try:
+    with open(cfg) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+if not isinstance(data, dict):
+    sys.exit(0)
+mcp = (data.get("mcpServers") or {}).get("agentmesh")
+if not isinstance(mcp, dict):
+    sys.exit(0)
+args = mcp.get("args")
+if not isinstance(args, list):
+    sys.exit(0)
+
+host = socket.gethostname()
+host_no_local = host[:-6] if host.endswith(".local") else host
+candidates = {host, host_no_local, host.split(".")[0]}
+
+cleaned = []
+dropped = False
+for a in args:
+    if isinstance(a, str) and a.startswith("--name="):
+        v = a[len("--name="):]
+        if v in candidates:
+            dropped = True
+            continue
+    cleaned.append(a)
+if not dropped:
+    sys.exit(0)
+shutil.copyfile(cfg, cfg + ".bak")
+mcp["args"] = cleaned
+tmp = cfg + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, cfg)
+print("OK")
+PYEOF
+)"
+  if [ "$result" = "OK" ]; then
+    ok "cleaned stale --name=<hostname> from ${cfg} (backup at ${cfg}.bak)"
+  fi
+}
+
+# register_claude_hook adds (or refreshes) the UserPromptSubmit entry that
+# pipes incoming mesh messages into the user's next prompt. Defined here so
+# the fast-path below can call it; the main flow below uses it too.
+register_claude_hook() {
+  if [ -n "${SKIP_HOOK:-}" ]; then
+    info "claude hook: skipped (SKIP_HOOK set)"
+    return
+  fi
+  result="$(python3 - "$CLAUDE_HOOKS" "$bin_path" <<'PYEOF'
+import json, os, shutil, sys
+cfg, bin_path = sys.argv[1], sys.argv[2]
+
+desired = {
+    "matcher": "*",
+    "hooks": [{"type": "command", "command": bin_path + " hook prompt-inject"}],
+}
+
+data = {}
+if os.path.exists(cfg):
+    try:
+        with open(cfg) as f:
+            txt = f.read().strip()
+            if txt:
+                data = json.loads(txt)
+    except Exception as e:
+        print(f"BAD_JSON {e}"); sys.exit(2)
+if not isinstance(data, dict):
+    print("NOT_OBJECT"); sys.exit(3)
+
+hooks = data.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    print("HOOKS_NOT_OBJECT"); sys.exit(4)
+
+ups = hooks.setdefault("UserPromptSubmit", [])
+if not isinstance(ups, list):
+    print("UPS_NOT_LIST"); sys.exit(5)
+
+# Idempotency: match on the agentmesh binary + the hook subcommand suffix
+# (the .exe on Windows, or any path containing "agentmesh", followed by the
+# unique " hook prompt-inject" tail).
+for entry in ups:
+    if not isinstance(entry, dict):
+        continue
+    inner = entry.get("hooks", [])
+    if not isinstance(inner, list):
+        continue
+    for h in inner:
+        if not isinstance(h, dict):
+            continue
+        cmd = h.get("command", "")
+        if "agentmesh" in cmd and cmd.endswith(" hook prompt-inject"):
+            print("ALREADY"); sys.exit(0)
+
+ups.append(desired)
+existed = os.path.exists(cfg)
+if existed:
+    shutil.copyfile(cfg, cfg + ".bak")
+else:
+    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+tmp = cfg + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, cfg)
+print("OK" if existed else "CREATED")
+PYEOF
+)"
+  case "$result" in
+    OK)        ok "claude hook: registered in ${CLAUDE_HOOKS} (backup at ${CLAUDE_HOOKS}.bak)" ;;
+    CREATED)   ok "claude hook: created ${CLAUDE_HOOKS} with UserPromptSubmit entry" ;;
+    ALREADY)   ok "claude hook: already registered" ;;
+    BAD_JSON*) warn "claude hook: ${CLAUDE_HOOKS} isn't valid JSON - not touching it" ;;
+    NOT_OBJECT|HOOKS_NOT_OBJECT|UPS_NOT_LIST)
+               warn "claude hook: ${CLAUDE_HOOKS} has an unexpected shape - not touching it" ;;
+    *)         warn "claude hook: ${result}" ;;
+  esac
+}
 
 # Fast path: agentmesh already configured somewhere AND user didn't ask to
-# reconfigure. We're done.
+# reconfigure. We refresh the binary, clean up any stale args, and make sure
+# the v0.4 UserPromptSubmit hook is in place for Claude Code users upgrading
+# from v0.3.
 if [ -n "$EXISTING" ] && [ -z "${RECONFIGURE:-}" ] && [ -z "${HARNESS:-}" ]; then
   ok "agentmesh already configured for: ${C_BOLD}${EXISTING}${C_OFF}"
+
+  # Drop any legacy --name=<hostname> args from JSON configs so v0.4's
+  # auto-derived name takes effect.
+  case " $EXISTING " in *" claude "*)      clean_stale_name "$CLAUDE_CONFIG"      ;; esac
+  case " $EXISTING " in *" cursor "*)      clean_stale_name "$CURSOR_CONFIG"      ;; esac
+  case " $EXISTING " in *" antigravity "*) clean_stale_name "$ANTIGRAVITY_CONFIG" ;; esac
+
+  # Ensure the v0.4 Claude Code hook is registered for upgrading users.
+  # register_claude_hook is idempotent and respects SKIP_HOOK.
+  case " $EXISTING " in
+    *" claude "*) register_claude_hook ;;
+  esac
+
   printf "${C_DIM}    re-run with RECONFIGURE=1 ... | sh to add/change harnesses${C_OFF}\n"
   printf "\n${C_BOLD}You're done.${C_OFF} Restart the harness(es) above to pick up v${ver_no_v}.\n"
   exit 0
@@ -378,8 +591,6 @@ EOF
   exit 0
 fi
 
-bin_path="${PREFIX}/${BIN}"
-
 register_one() {
   kind="$1"; cfg="$2"
   result="$(python3 - "$kind" "$cfg" "$bin_path" "${NAME:-}" <<'PYEOF'
@@ -456,80 +667,6 @@ PYEOF
     NOT_OBJECT|MCP_NOT_OBJECT)
                warn "${kind}: ${cfg} has an unexpected shape - not touching it" ;;
     *)         warn "${kind}: ${result}" ;;
-  esac
-}
-
-register_claude_hook() {
-  if [ -n "${SKIP_HOOK:-}" ]; then
-    info "claude hook: skipped (SKIP_HOOK set)"
-    return
-  fi
-  result="$(python3 - "$CLAUDE_HOOKS" "$bin_path" <<'PYEOF'
-import json, os, shutil, sys
-cfg, bin_path = sys.argv[1], sys.argv[2]
-
-desired = {
-    "matcher": "*",
-    "hooks": [{"type": "command", "command": bin_path + " hook prompt-inject"}],
-}
-
-data = {}
-if os.path.exists(cfg):
-    try:
-        with open(cfg) as f:
-            txt = f.read().strip()
-            if txt:
-                data = json.loads(txt)
-    except Exception as e:
-        print(f"BAD_JSON {e}"); sys.exit(2)
-if not isinstance(data, dict):
-    print("NOT_OBJECT"); sys.exit(3)
-
-hooks = data.setdefault("hooks", {})
-if not isinstance(hooks, dict):
-    print("HOOKS_NOT_OBJECT"); sys.exit(4)
-
-ups = hooks.setdefault("UserPromptSubmit", [])
-if not isinstance(ups, list):
-    print("UPS_NOT_LIST"); sys.exit(5)
-
-# Idempotency: match on the agentmesh binary + the hook subcommand suffix
-# (the .exe on Windows, or any path containing "agentmesh", followed by the
-# unique " hook prompt-inject" tail).
-for entry in ups:
-    if not isinstance(entry, dict):
-        continue
-    inner = entry.get("hooks", [])
-    if not isinstance(inner, list):
-        continue
-    for h in inner:
-        if not isinstance(h, dict):
-            continue
-        cmd = h.get("command", "")
-        if "agentmesh" in cmd and cmd.endswith(" hook prompt-inject"):
-            print("ALREADY"); sys.exit(0)
-
-ups.append(desired)
-existed = os.path.exists(cfg)
-if existed:
-    shutil.copyfile(cfg, cfg + ".bak")
-else:
-    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
-tmp = cfg + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(data, f, indent=2)
-os.replace(tmp, cfg)
-print("OK" if existed else "CREATED")
-PYEOF
-)"
-  case "$result" in
-    OK)        ok "claude hook: registered in ${CLAUDE_HOOKS} (backup at ${CLAUDE_HOOKS}.bak)" ;;
-    CREATED)   ok "claude hook: created ${CLAUDE_HOOKS} with UserPromptSubmit entry" ;;
-    ALREADY)   ok "claude hook: already registered" ;;
-    BAD_JSON*) warn "claude hook: ${CLAUDE_HOOKS} isn't valid JSON - not touching it" ;;
-    NOT_OBJECT|HOOKS_NOT_OBJECT|UPS_NOT_LIST)
-               warn "claude hook: ${CLAUDE_HOOKS} has an unexpected shape - not touching it" ;;
-    *)         warn "claude hook: ${result}" ;;
   esac
 }
 
