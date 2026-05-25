@@ -20,8 +20,14 @@
 #   RECONFIGURE      if set, force the harness picker even when agentmesh is
 #                    already registered.
 #   SKIP_REGISTER    if set, never touch any harness config.
+#   SKIP_HOOK        if set, do NOT install the Claude Code UserPromptSubmit
+#                    hook that prepends incoming mesh messages to your next
+#                    prompt. (Default: hook is installed when claude is among
+#                    the selected harnesses.)
 #   CLAUDE_CONFIG, CURSOR_CONFIG, CODEX_CONFIG, ANTIGRAVITY_CONFIG
 #                    override individual config paths.
+#   CLAUDE_HOOKS     override the Claude Code hooks settings path
+#                    (default: ~/.claude/settings.json).
 
 set -eu
 
@@ -73,6 +79,7 @@ ver_no_v="$(echo "$VERSION" | sed -E 's/^v//')"
 # ---- known harness config paths -----------------------------------------
 
 CLAUDE_CONFIG="${CLAUDE_CONFIG:-${HOME}/.claude.json}"
+CLAUDE_HOOKS="${CLAUDE_HOOKS:-${HOME}/.claude/settings.json}"
 CURSOR_CONFIG="${CURSOR_CONFIG:-${HOME}/.cursor/mcp.json}"
 CODEX_CONFIG="${CODEX_CONFIG:-${HOME}/.codex/config.toml}"
 ANTIGRAVITY_CONFIG="${ANTIGRAVITY_CONFIG:-${HOME}/.gemini/antigravity/mcp_config.json}"
@@ -452,10 +459,87 @@ PYEOF
   esac
 }
 
+register_claude_hook() {
+  if [ -n "${SKIP_HOOK:-}" ]; then
+    info "claude hook: skipped (SKIP_HOOK set)"
+    return
+  fi
+  result="$(python3 - "$CLAUDE_HOOKS" "$bin_path" <<'PYEOF'
+import json, os, shutil, sys
+cfg, bin_path = sys.argv[1], sys.argv[2]
+
+desired = {
+    "matcher": "*",
+    "hooks": [{"type": "command", "command": bin_path + " hook prompt-inject"}],
+}
+
+data = {}
+if os.path.exists(cfg):
+    try:
+        with open(cfg) as f:
+            txt = f.read().strip()
+            if txt:
+                data = json.loads(txt)
+    except Exception as e:
+        print(f"BAD_JSON {e}"); sys.exit(2)
+if not isinstance(data, dict):
+    print("NOT_OBJECT"); sys.exit(3)
+
+hooks = data.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    print("HOOKS_NOT_OBJECT"); sys.exit(4)
+
+ups = hooks.setdefault("UserPromptSubmit", [])
+if not isinstance(ups, list):
+    print("UPS_NOT_LIST"); sys.exit(5)
+
+# Idempotency: match on the agentmesh binary + the hook subcommand suffix
+# (the .exe on Windows, or any path containing "agentmesh", followed by the
+# unique " hook prompt-inject" tail).
+for entry in ups:
+    if not isinstance(entry, dict):
+        continue
+    inner = entry.get("hooks", [])
+    if not isinstance(inner, list):
+        continue
+    for h in inner:
+        if not isinstance(h, dict):
+            continue
+        cmd = h.get("command", "")
+        if "agentmesh" in cmd and cmd.endswith(" hook prompt-inject"):
+            print("ALREADY"); sys.exit(0)
+
+ups.append(desired)
+existed = os.path.exists(cfg)
+if existed:
+    shutil.copyfile(cfg, cfg + ".bak")
+else:
+    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+tmp = cfg + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, cfg)
+print("OK" if existed else "CREATED")
+PYEOF
+)"
+  case "$result" in
+    OK)        ok "claude hook: registered in ${CLAUDE_HOOKS} (backup at ${CLAUDE_HOOKS}.bak)" ;;
+    CREATED)   ok "claude hook: created ${CLAUDE_HOOKS} with UserPromptSubmit entry" ;;
+    ALREADY)   ok "claude hook: already registered" ;;
+    BAD_JSON*) warn "claude hook: ${CLAUDE_HOOKS} isn't valid JSON - not touching it" ;;
+    NOT_OBJECT|HOOKS_NOT_OBJECT|UPS_NOT_LIST)
+               warn "claude hook: ${CLAUDE_HOOKS} has an unexpected shape - not touching it" ;;
+    *)         warn "claude hook: ${result}" ;;
+  esac
+}
+
 printf "\n"
 for h in $HARNESS; do
   case "$h" in
-    claude)      register_one claude      "$CLAUDE_CONFIG"      ;;
+    claude)
+      register_one claude "$CLAUDE_CONFIG"
+      register_claude_hook
+      ;;
     cursor)      register_one cursor      "$CURSOR_CONFIG"      ;;
     codex)       register_one codex       "$CODEX_CONFIG"       ;;
     antigravity) register_one antigravity "$ANTIGRAVITY_CONFIG" ;;

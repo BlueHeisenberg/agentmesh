@@ -1,4 +1,10 @@
-// Package discovery advertises this node and tracks LAN peers via mDNS.
+// Package discovery wraps libp2p/zeroconf v2 with the agentmesh model:
+// per-interface advertise + browse, with explicit IP lists so loopback works.
+//
+// libp2p/zeroconf's standard Register() refuses to publish loopback IPs as A
+// records (its addrsForInterface hard-codes !IsLoopback). Same-machine
+// discovery is the *primary* agentmesh use case, so we use RegisterProxy
+// throughout and pass the IPs we want advertised explicitly.
 package discovery
 
 import (
@@ -18,19 +24,20 @@ const (
 	Domain      = "local."
 )
 
-// Peer is what we know about another node from mDNS + /v1/hello.
+// Peer is what we know about another node from mDNS.
 type Peer struct {
-	PeerID   string    // full hex pubkey
-	Name     string    // human-readable
-	Addr     string    // host:port (HTTP base)
+	PeerID   string
+	Name     string
+	Addr     string // host:port
 	LastSeen time.Time
 }
 
 func (p Peer) BaseURL() string { return "https://" + p.Addr }
 
+// Registry is the live set of peers this node has discovered.
 type Registry struct {
-	mu    sync.RWMutex
-	peers map[string]*Peer // keyed by PeerID
+	mu     sync.RWMutex
+	peers  map[string]*Peer
 	selfID string
 }
 
@@ -58,6 +65,12 @@ func (r *Registry) Get(peerID string) (Peer, bool) {
 	return *p, true
 }
 
+func (r *Registry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.peers = map[string]*Peer{}
+}
+
 func (r *Registry) upsert(p Peer) {
 	if p.PeerID == r.selfID || p.PeerID == "" {
 		return
@@ -66,45 +79,113 @@ func (r *Registry) upsert(p Peer) {
 	defer r.mu.Unlock()
 	r.peers[p.PeerID] = &p
 	if os.Getenv("AGENTMESH_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "agentmesh: discovered peer %s (%s) at %s\n", p.Name, p.PeerID[:16], p.Addr)
+		fmt.Fprintf(os.Stderr, "agentmesh: discovered peer %s (%s) at %s\n",
+			p.Name, p.PeerID[:16], p.Addr)
 	}
 }
 
-func (r *Registry) sweep(maxAge time.Duration) {
-	cutoff := time.Now().Add(-maxAge)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for id, p := range r.peers {
-		if p.LastSeen.Before(cutoff) {
-			delete(r.peers, id)
+// ----------------------------------------------------------------------------
+// Scope helpers
+// ----------------------------------------------------------------------------
+
+// LoopbackInterfaces returns just lo0 (or equivalent). Used as the default
+// advertise/browse scope: same-machine sessions auto-discover, zero LAN noise.
+func LoopbackInterfaces() []net.Interface {
+	all, _ := net.Interfaces()
+	var out []net.Interface
+	for _, ifi := range all {
+		if ifi.Flags&net.FlagLoopback != 0 && ifi.Flags&net.FlagUp != 0 {
+			out = append(out, ifi)
 		}
 	}
+	return out
 }
 
-// Advertise registers this node on mDNS. Returns a shutdown func.
-func Advertise(name, peerID string, port int) (func(), error) {
-	// The service "instance name" must be unique on the network — use short id.
+// NonLoopbackMulticastInterfaces returns up, multicast-capable, non-loopback
+// interfaces — the LAN-facing set we add to the scope after mesh_open_lan.
+func NonLoopbackMulticastInterfaces() []net.Interface {
+	all, _ := net.Interfaces()
+	var out []net.Interface
+	for _, ifi := range all {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if ifi.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		out = append(out, ifi)
+	}
+	return out
+}
+
+// LANIPv4s returns the IPv4 addresses we have on non-loopback interfaces, for
+// inclusion in our mDNS A records when we're in LAN mode.
+func LANIPv4s() []string {
+	var out []string
+	for _, ifi := range NonLoopbackMulticastInterfaces() {
+		addrs, _ := ifi.Addrs()
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+				continue
+			}
+			out = append(out, ip4.String())
+		}
+	}
+	return out
+}
+
+// ----------------------------------------------------------------------------
+// Advertise
+// ----------------------------------------------------------------------------
+
+// Advertise registers this node on mDNS over the given interfaces, publishing
+// the given IPs as A records. Use RegisterProxy because the library's plain
+// Register() filters out loopback IPs (server.go: addrsForInterface drops
+// anything that returns true from IsLoopback). Returns a shutdown func.
+func Advertise(name, peerID string, port int, ifaces []net.Interface, ips []string) (func(), error) {
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("Advertise: no IPs to publish")
+	}
+	if len(ifaces) == 0 {
+		return nil, fmt.Errorf("Advertise: no interfaces to advertise on")
+	}
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "agentmesh"
+	}
+
 	instance := peerID[:16]
 	txt := []string{
 		"v=1",
 		"pk=" + peerID,
 		"name=" + name,
 	}
-	server, err := zeroconf.Register(instance, ServiceType, Domain, port, txt, nil)
+	server, err := zeroconf.RegisterProxy(instance, ServiceType, Domain, port, host, ips, txt, ifaces)
 	if err != nil {
 		return nil, fmt.Errorf("mdns register: %w", err)
 	}
 	return func() { server.Shutdown() }, nil
 }
 
-// Browse runs until ctx is cancelled, feeding the registry from mDNS announcements.
-func Browse(ctx context.Context, reg *Registry) error {
-	// Continuous in-memory consumer for the long-lived Browse below.
+// ----------------------------------------------------------------------------
+// Browse
+// ----------------------------------------------------------------------------
+
+// Browse runs until ctx is cancelled, feeding mDNS announcements into reg.
+// Restricted to the given interfaces (use LoopbackInterfaces for same-machine
+// only, or LoopbackInterfaces + NonLoopbackMulticastInterfaces for LAN mode).
+func Browse(ctx context.Context, reg *Registry, ifaces []net.Interface) error {
 	merged := make(chan *zeroconf.ServiceEntry, 64)
 	go func() {
 		for entry := range merged {
 			if os.Getenv("AGENTMESH_DEBUG") != "" {
-				fmt.Fprintf(os.Stderr, "agentmesh: mdns entry instance=%q text=%v\n", entry.Instance, entry.Text)
+				fmt.Fprintf(os.Stderr, "agentmesh: mdns entry instance=%q text=%v\n",
+					entry.Instance, entry.Text)
 			}
 			p := entryToPeer(entry)
 			if p.PeerID != "" {
@@ -113,19 +194,6 @@ func Browse(ctx context.Context, reg *Registry) error {
 		}
 	}()
 
-	// Re-Browse periodically. libp2p/zeroconf v2's Browse caches its own
-	// emit-state inside one invocation: once it has surfaced a service entry
-	// to us, it won't re-surface the same entry until cache expiry, even if
-	// the peer keeps re-announcing on the network. By cycling Browse calls
-	// every ~25s we force fresh mDNS queries and let new emissions land in
-	// our registry — which is what kept peers visible to Apple's stack while
-	// our long-lived single Browse silently went quiet.
-	//
-	// We also deliberately do NOT sweep entries on a TTL. Once we've seen a
-	// peer, it stays in the registry until the agentmesh process restarts.
-	// A peer that's truly gone surfaces as a TLS connect failure at send
-	// time, which the agent can handle. The old 2-minute sweep was the
-	// thing that made conversations die mid-flight after restarts.
 	go func() {
 		for {
 			if ctx.Err() != nil {
@@ -143,11 +211,14 @@ func Browse(ctx context.Context, reg *Registry) error {
 				}
 				close(done)
 			}()
-			_ = zeroconf.Browse(round, ServiceType, Domain, entries)
+			var opts []zeroconf.ClientOption
+			if len(ifaces) > 0 {
+				opts = append(opts, zeroconf.SelectIfaces(ifaces))
+			}
+			_ = zeroconf.Browse(round, ServiceType, Domain, entries, opts...)
 			cancel()
-			// libp2p/zeroconf closes `entries` itself in params.done() on
-			// context cancel; do NOT close it here or we'll double-close
-			// and panic the process.
+			// libp2p/zeroconf closes `entries` itself in params.done(); do NOT
+			// close it here or we double-close-panic.
 			<-done
 			select {
 			case <-ctx.Done():
@@ -161,6 +232,10 @@ func Browse(ctx context.Context, reg *Registry) error {
 	return ctx.Err()
 }
 
+// ----------------------------------------------------------------------------
+// Address picking for incoming peer entries
+// ----------------------------------------------------------------------------
+
 func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 	var pk, name string
 	for _, txt := range e.Text {
@@ -171,21 +246,11 @@ func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 			name = strings.TrimPrefix(txt, "name=")
 		}
 	}
-	// Pick the best routable IPv4. Peers can advertise multiple A records
-	// (one per interface), e.g. Windows with Hyper-V/WSL exposes a virtual
-	// switch like 172.27.x.x alongside the real Wi-Fi 192.168.x.x. We score
-	// candidates: a same-/24 match with one of our own interfaces wins,
-	// then /16, then anything; loopback and link-local are skipped.
-	var host string
-	if len(e.AddrIPv4) > 0 {
-		ip := pickBestIPv4(e.AddrIPv4)
-		if ip == nil {
-			return Peer{}
-		}
-		host = ip.String()
-	} else if len(e.AddrIPv6) > 0 {
-		host = "[" + e.AddrIPv6[0].String() + "]"
-	} else {
+	if pk == "" {
+		return Peer{}
+	}
+	host := pickAddr(e.AddrIPv4, e.AddrIPv6)
+	if host == "" {
 		return Peer{}
 	}
 	return Peer{
@@ -196,39 +261,57 @@ func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 	}
 }
 
-func pickBestIPv4(candidates []net.IP) net.IP {
-	mine := localIPv4s()
+// pickAddr scores candidate IPv4s and returns the best routable string form.
+// Order of preference (best first):
+//
+//  1. 127.0.0.1 if we've advertised lo0 ourselves (same-machine pair) — loopback
+//     loop is what same-machine sessions communicate through.
+//  2. Same /24 as one of our LAN interfaces.
+//  3. Same /16 as one of our LAN interfaces.
+//  4. Any usable IPv4 (not link-local / unspecified).
+//  5. IPv6 (link-local form) as last resort.
+//
+// The loopback preference is what makes same-machine peers connect via
+// 127.0.0.1 even when they also advertise LAN IPs.
+func pickAddr(v4 []net.IP, v6 []net.IP) string {
+	// Step 1: loopback wins if it's in the list.
+	for _, c := range v4 {
+		if c.IsLoopback() {
+			return c.String()
+		}
+	}
 
-	usable := candidates[:0:0]
-	for _, c := range candidates {
+	mine := localLANIPv4s()
+	usable := make([]net.IP, 0, len(v4))
+	for _, c := range v4 {
 		c4 := c.To4()
-		if c4 == nil || c4.IsLoopback() || c4.IsLinkLocalUnicast() || c4.IsUnspecified() {
+		if c4 == nil || c4.IsLinkLocalUnicast() || c4.IsUnspecified() {
 			continue
 		}
 		usable = append(usable, c4)
 	}
-	if len(usable) == 0 {
-		return nil
-	}
 
-	// Best: same /24 as any of our local IPs.
 	for _, c := range usable {
 		for _, m := range mine {
 			if sameSubnet(c, m, 24) {
-				return c
+				return c.String()
 			}
 		}
 	}
-	// Second: same /16.
 	for _, c := range usable {
 		for _, m := range mine {
 			if sameSubnet(c, m, 16) {
-				return c
+				return c.String()
 			}
 		}
 	}
-	// Fallback: first usable.
-	return usable[0]
+	if len(usable) > 0 {
+		return usable[0].String()
+	}
+	if len(v6) > 0 {
+		return "[" + v6[0].String() + "]"
+	}
+	return ""
 }
 
 func sameSubnet(a, b net.IP, prefix int) bool {
@@ -240,18 +323,9 @@ func sameSubnet(a, b net.IP, prefix int) bool {
 	return a4.Mask(mask).Equal(b4.Mask(mask))
 }
 
-// localIPv4s returns this host's non-loopback, non-link-local IPv4 addresses
-// across all up interfaces. Called per discovered peer — cheap enough.
-func localIPv4s() []net.IP {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
+func localLANIPv4s() []net.IP {
 	var out []net.IP
-	for _, ifi := range ifaces {
-		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
-			continue
-		}
+	for _, ifi := range NonLoopbackMulticastInterfaces() {
 		addrs, _ := ifi.Addrs()
 		for _, a := range addrs {
 			ipnet, ok := a.(*net.IPNet)
@@ -259,7 +333,7 @@ func localIPv4s() []net.IP {
 				continue
 			}
 			ip4 := ipnet.IP.To4()
-			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+			if ip4 == nil || ip4.IsLinkLocalUnicast() {
 				continue
 			}
 			out = append(out, ip4)

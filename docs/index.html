@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>agentmesh — a tiny mesh so your agents can talk to each other on the LAN</title>
-<meta name="description" content="LAN-native P2P for AI agents. mDNS discovery, mTLS over Ed25519, MCP-native. ~1.5k LOC of Go.">
+<title>agentmesh - the agents in your editor sessions, talking to each other</title>
+<meta name="description" content="A tiny Go binary that lets the AI coding assistants in your open sessions talk to each other directly. Same machine first, LAN optional. mTLS 1.3, ephemeral identity, MCP-native.">
 <meta name="theme-color" content="#0A0A0A">
 
 <meta property="og:title" content="agentmesh">
-<meta property="og:description" content="a tiny mesh so your agents can talk to each other on the LAN.">
+<meta property="og:description" content="the agents in your editor sessions, talking to each other.">
 <meta property="og:image" content="assets/header.svg">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
@@ -298,6 +298,30 @@
   .ascii .hl { color: var(--fg); }
   .ascii .amber { color: var(--amber); }
 
+  /* ── FIGURES (SVG diagrams) ──────────────────────────────── */
+  figure.diagram {
+    margin: 24px 0 8px;
+    padding: 20px;
+    border: 1px solid var(--rule-2);
+    border-radius: 2px;
+    background: var(--bg-soft);
+    text-align: center;
+  }
+  figure.diagram img {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
+  figure.diagram figcaption {
+    font-size: 12px;
+    color: var(--fg-muted);
+    margin-top: 14px;
+    line-height: 1.55;
+    letter-spacing: 0.01em;
+  }
+
   /* ── STEPS (HOW IT WORKS) ────────────────────────────────── */
   ol.steps {
     list-style: none;
@@ -381,7 +405,7 @@
     font-size: 13.5px;
   }
   ul.principles li {
-    padding: 9px 0 9px 30px;
+    padding: 9px 0 9px 38px;
     position: relative;
     color: var(--fg);
     border-top: 1px dashed var(--rule);
@@ -391,9 +415,11 @@
     content: attr(data-mark);
     position: absolute;
     left: 0; top: 9px;
-    font-weight: 700;
-    width: 22px;
-    text-align: center;
+    font-weight: 600;
+    width: 32px;
+    text-align: left;
+    font-size: 12px;
+    letter-spacing: 0;
   }
   ul.principles li[data-tone="ok"]::before  { color: var(--phosphor); }
   ul.principles li[data-tone="warn"]::before{ color: var(--amber); }
@@ -475,36 +501,36 @@
 <main>
 
   <!-- BOOT LOG ───────────────────────────────────────────────── -->
-  <pre class="boot reveal r1"><span class="prompt">$</span> agentmesh serve --name=davids-laptop
-<span class="dim">agentmesh: listening on :49892 as davids-laptop (peer_id=4e3f7a91d8c01b2c…)</span>
-<span class="dim">agentmesh: advertising _agentmesh._tcp.local</span>
-agentmesh: discovered peer <span class="you">node-B</span> (8b14ffa2c01d3e5f…) at 192.168.1.42:51008
-agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…) at 192.168.1.71:50213
-<span class="ok">mtls: handshake ok</span> · <span class="ok">mtls: handshake ok</span>
-<span class="warn">▌</span> waiting for inbox…</pre>
+  <pre class="boot reveal r1"><span class="prompt">$</span> agentmesh serve
+<span class="dim">agentmesh: loopback as harnessP2P@main#a3f2 on 127.0.0.1:49892</span>
+<span class="dim">agentmesh: advertising _agentmesh._tcp.local on lo0 (RegisterProxy 127.0.0.1)</span>
+agentmesh: discovered peer <span class="you">Cursor</span> myproj@dev#7c1e at 127.0.0.1:51220
+<span class="ok">mtls: handshake ok</span> · <span class="ok">inbox: subscribed</span>
+<span class="warn">▌</span> waiting for messages…</pre>
 
   <!-- HERO ───────────────────────────────────────────────────── -->
   <header class="hero">
-    <p class="eyebrow reveal r2"><span class="dot"></span> v0.2.0 · MIT · LAN-NATIVE · OPEN SOURCE</p>
+    <p class="eyebrow reveal r2"><span class="dot"></span> v0.4.0 · MIT · LOOPBACK-FIRST · OPEN SOURCE</p>
 
     <h1 class="wordmark reveal r3">agent<span class="slash">/</span>mesh</h1>
 
     <p class="tagline reveal r4">
-      a tiny mesh so your agents can talk to each other on the&nbsp;LAN.<span class="caret"></span>
+      the agents in your editor sessions, talking to each&nbsp;other.<span class="caret"></span>
     </p>
     <p class="tagline reveal r4">
-      <em>mDNS discovery · mTLS over Ed25519 · MCP-native.</em>
+      <em>same machine first · LAN optional · mTLS over Ed25519.</em>
     </p>
 
     <p class="submeta reveal r5">
-      <span>~1.5k LOC of Go</span>
-      <span>11M static binary</span>
-      <span>zero config</span>
+      <span>one small Go binary</span>
+      <span>per-session, ephemeral</span>
+      <span>MCP-native</span>
     </p>
 
     <nav class="hero-nav reveal r5">
+      <a href="#what">what it is</a>
       <a href="#install">install</a>
-      <a href="#how">how it works</a>
+      <a href="#flow">message flow</a>
       <a href="#tools">tools</a>
       <a href="#trust">trust</a>
       <a href="https://github.com/BlueHeisenberg/agentmesh">github</a>
@@ -514,42 +540,37 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <hr class="rule">
 
   <!-- WHAT IT IS ─────────────────────────────────────────────── -->
-  <section id="why">
-    <p class="section-label"><span class="num">// 00</span>the problem</p>
-    <h2>Two agents. One wall.</h2>
+  <section id="what">
+    <p class="section-label"><span class="num">// 00</span>what it is</p>
+    <h2>A wire between your sessions.</h2>
     <p class="lead">
-      You're running two harnessed agents — Claude Code on your laptop, Claude Code on a teammate's,
-      maybe one in a VM. Each has <em>its</em> context, <em>its</em> files, <em>its</em> memory. There is no way
-      for them to talk to each other, let alone hand off a file or ask a question without going through
-      the cloud.
+      agentmesh is a small Go binary that runs alongside each AI coding-assistant session you have open:
+      Claude Code, Cursor, ChatGPT Codex CLI, Antigravity. It lets those sessions exchange messages and files
+      directly, with no cloud relay in the middle.
     </p>
     <p class="muted">
-      The internet is the wrong layer for this. The LAN is right there.
+      The primary case is two sessions on the <em>same machine</em>: one Claude Code in project A, one Cursor in project B,
+      two Codex CLIs side by side. Sessions on different machines on the same LAN can talk too, but only if the agent opts in.
     </p>
   </section>
 
   <hr class="rule">
 
-  <!-- TOPOLOGY ───────────────────────────────────────────────── -->
+  <!-- TOPOLOGY (same machine) ────────────────────────────────── -->
   <section id="topology">
     <p class="section-label"><span class="num">// 01</span>topology</p>
-    <h2>One node per harness.</h2>
+    <h2>Same machine, by default.</h2>
     <p>
-      Each harness instance spawns a local <code>agentmesh</code> process. The harness talks to its own node
-      over stdio MCP. The nodes do the P2P — mDNS to discover each other, mTLS to talk.
+      Every session you open spawns its own short-lived <code>agentmesh</code> process. They find each other over
+      mDNS on the loopback interface, set up mTLS, and start talking. Nothing leaves the machine.
     </p>
-    <pre class="ascii"><span class="hl">claude code A</span>                               <span class="hl">claude code B</span>
-     │                                           │
-     │ stdio MCP                                 │ stdio MCP
-     ▼                                           ▼
-┌──────────────┐                           ┌──────────────┐
-│   agentmesh  │ ◀═══════ <span class="amber">mTLS 1.3</span> ═══════▶ │   agentmesh  │
-│     node A   │                           │     node B   │
-└──────┬───────┘                           └───────┬──────┘
-       │                                           │
-       └──────────── <span class="amber">_agentmesh._tcp.local</span> ────────┘
-                            (LAN)
-</pre>
+
+    <figure class="diagram reveal r2">
+      <img src="assets/topology-local.svg" alt="Two editor sessions on the same machine, each with its own agentmesh process, connected over loopback">
+      <figcaption>
+        By default, agentmesh wires up the agents in your sessions on the same machine. They talk to each other automatically.
+      </figcaption>
+    </figure>
   </section>
 
   <hr class="rule">
@@ -558,7 +579,7 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <section id="install">
     <p class="section-label"><span class="num">// 02</span>install</p>
     <h2>One line. Then it's just there.</h2>
-    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and asks which harness(es) to register with — Claude Code, Cursor, ChatGPT Codex, Antigravity, or any combination — through an interactive checkbox menu (arrows, space, enter). Re-running the one-liner detects an existing install and just refreshes the binary unless you pass <code>RECONFIGURE=1</code>. Each new session starts loopback-only; the agent calls <code>mesh_open_lan</code> when it wants to expose itself.</p>
+    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and then asks via an interactive checkbox menu which harness(es) to wire <code>agentmesh</code> into: Claude Code, Cursor, ChatGPT Codex (CLI), Antigravity. Configs are edited safely (a <code>.bak</code> is written first; re-running is idempotent). On Claude Code, a <code>UserPromptSubmit</code> hook is also installed so incoming mesh messages get prepended to your next prompt automatically: you see the messages, the agent sees them, all in the same turn.</p>
 
     <div class="code">
       <div class="code-head">
@@ -577,112 +598,68 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
     </div>
 
     <pre class="ascii" style="margin-top:18px;text-align:left;">  <span class="amber">Where should I register agentmesh?</span>
-    <span class="amber">1</span>) claude code     <span class="hl">~/.claude.json</span>
-    <span class="amber">2</span>) cursor          <span class="hl">~/.cursor/mcp.json</span>
-    <span class="amber">3</span>) chatgpt codex   <span class="hl">~/.codex/config.toml</span>
-    <span class="amber">4</span>) antigravity     <span class="hl">~/.gemini/antigravity/mcp_config.json</span>
-    <span class="amber">5</span>) all of the above
-    <span class="amber">6</span>) none — I'll do it manually
-  <span style="opacity:.6">choose (comma-separated, e.g. 1,2) [default: 1]:</span> _
+    [<span class="amber">x</span>] claude code     <span class="hl">~/.claude.json</span>
+    [<span class="amber">x</span>] cursor          <span class="hl">~/.cursor/mcp.json</span>
+    [ ] chatgpt codex   <span class="hl">~/.codex/config.toml</span>
+    [ ] antigravity     <span class="hl">~/.gemini/antigravity/mcp_config.json</span>
+
+  <span style="opacity:.6">[space] toggle  [enter] confirm</span>
 </pre>
 
     <p class="muted" style="margin-top:18px;">
       Non-interactive? Pass env vars to <code>sh</code> / set <code>$env:</code> before <code>iex</code>:
       <code>HARNESS=claude,cursor</code>,
-      <code>VERSION=v0.2.0</code>,
+      <code>VERSION=v0.4.0</code>,
       <code>NAME=davids-laptop</code>,
       <code>SKIP_REGISTER=1</code>.
-      Idempotent — safe to re-run; a <code>.bak</code> of every config is written before any edit.
-    </p>
-
-    <p style="margin-top:24px;">
-      Then add to your harness's MCP config. For Claude Code, <code>~/.claude.json</code>:
-    </p>
-
-    <div class="code">
-      <div class="code-head">
-        <span><span class="dots"><i></i><i></i><i></i></span>~/.claude.json</span>
-        <button class="copy-btn" data-target="mcp-json">copy</button>
-      </div>
-<pre id="mcp-json">{
-  <span class="comment">"mcpServers"</span>: {
-    <span class="comment">"agentmesh"</span>: {
-      <span class="comment">"command"</span>: <span class="comment">"/abs/path/to/agentmesh"</span>,
-      <span class="comment">"args"</span>: [<span class="comment">"serve"</span>, <span class="comment">"--name=your-laptop"</span>]
-    }
-  }
-}</pre>
-    </div>
-
-    <p class="muted" style="margin-top:18px;">
-      Restart the harness. The agent now has eight <code>mesh_*</code> tools.
+      Idempotent: safe to re-run; a <code>.bak</code> of every config is written before any edit.
     </p>
   </section>
 
   <hr class="rule">
 
-  <!-- HOW IT WORKS ───────────────────────────────────────────── -->
-  <section id="how">
-    <p class="section-label"><span class="num">// 03</span>how it works</p>
-    <h2>Four jobs, same code on every node.</h2>
+  <!-- MESSAGE FLOW ───────────────────────────────────────────── -->
+  <section id="flow">
+    <p class="section-label"><span class="num">// 03</span>how a message arrives</p>
+    <h2>Push, then prepend.</h2>
+    <p>
+      A peer's agent calls <code>mesh_send</code>; the message lands in this session's in-memory inbox.
+      On your next prompt, the <code>UserPromptSubmit</code> hook drains the inbox and prepends those messages
+      to whatever the agent is about to see.
+    </p>
 
-    <ol class="steps">
-      <li>
-        <h3>identity</h3>
-        <p class="muted">An Ed25519 keypair, persisted to <code>~/.agentmesh/identity.json</code>. The public key, hex-encoded, is your <code>peer_id</code>. The same keypair becomes a self-signed X.509 certificate used by TLS — no CA, no renewal.</p>
-      </li>
-      <li>
-        <h3>discovery</h3>
-        <p class="muted">Advertise <code>_agentmesh._tcp.local</code> over mDNS with the peer_id in the TXT record. Browse for the same service type. Peers come and go automatically; nothing to configure.</p>
-      </li>
-      <li>
-        <h3>transport</h3>
-        <p class="muted">HTTPS on a random LAN port. Every connection is <strong>mTLS 1.3</strong>. The client pins the server's cert against the peer_id it expected from mDNS. A LAN attacker can advertise an arbitrary peer_id — they can't talk to you <em>as</em> that peer without the private key.</p>
-      </li>
-      <li>
-        <h3>mcp shim</h3>
-        <p class="muted">Each tool is a thin wrapper over the node — <code>mesh_send</code> POSTs to a peer's <code>/v1/msg</code>; <code>mesh_fetch</code> GETs <code>/v1/share/{handle}</code>. The harness never speaks mDNS or TLS; it just speaks MCP.</p>
-      </li>
-    </ol>
+    <figure class="diagram reveal r2">
+      <img src="assets/flow-push.svg" alt="Peer sends a message, it arrives in the local inbox, the hook prepends it to the next user prompt, the agent reads and replies in the same turn">
+      <figcaption>
+        Peer sends, inbox stores, hook prepends, agent reads and replies, all in the same turn. No polling, no copy-paste.
+      </figcaption>
+    </figure>
+
+    <p class="muted">
+      The server also publishes an MCP resource at <code>agentmesh://inbox</code> and emits
+      <code>notifications/resources/updated</code> whenever new messages arrive, for harnesses that surface MCP
+      resource notifications natively.
+    </p>
   </section>
 
   <hr class="rule">
 
-  <!-- BEFORE / AFTER ─────────────────────────────────────────── -->
-  <section id="compare">
-    <p class="section-label"><span class="num">// 04</span>before / after</p>
-    <h2>What changes.</h2>
+  <!-- LAN ────────────────────────────────────────────────────── -->
+  <section id="lan">
+    <p class="section-label"><span class="num">// 04</span>across the LAN</p>
+    <h2>Opt in when you need it.</h2>
+    <p>
+      Have the agent call <code>mesh_open_lan</code> if you want sessions on another machine on the same network
+      to find this one. The loopback link stays up, so same-machine peers keep working; LAN peers get added on top.
+      <code>mesh_close_lan</code> drops back to loopback-only.
+    </p>
 
-    <table class="compare">
-      <thead>
-        <tr>
-          <th>without agentmesh</th>
-          <th>with agentmesh</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td class="left">"copy this file to my other laptop"</td>
-          <td class="right"><code>mesh_share</code> + <code>mesh_fetch</code></td>
-        </tr>
-        <tr>
-          <td class="left">"ask the other agent what it found"</td>
-          <td class="right"><code>mesh_send</code> + <code>mesh_inbox</code></td>
-        </tr>
-        <tr>
-          <td class="left">cloud relay, accounts, ngrok tunnels</td>
-          <td class="right">mDNS + mTLS, on the LAN</td>
-        </tr>
-        <tr>
-          <td class="left">plaintext WebSockets you forgot to TLS</td>
-          <td class="right">TLS 1.3 by construction</td>
-        </tr>
-        <tr>
-          <td class="left">a server somewhere</td>
-          <td class="right">an 11M static binary</td>
-        </tr>
-      </tbody>
-    </table>
+    <figure class="diagram reveal r2">
+      <img src="assets/topology-lan.svg" alt="Two machines on the same LAN, each running multiple agentmesh sessions, bridged when an agent calls mesh_open_lan">
+      <figcaption>
+        Loopback by default; LAN visibility is one tool call away, per session.
+      </figcaption>
+    </figure>
   </section>
 
   <hr class="rule">
@@ -690,17 +667,20 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
   <!-- TOOLS ──────────────────────────────────────────────────── -->
   <section id="tools">
     <p class="section-label"><span class="num">// 05</span>mcp tools</p>
-    <h2>Eight tools. That's all.</h2>
-    <p class="muted">All take JSON arguments, return JSON. The agent decides when to use them.</p>
+    <h2>Eleven tools.</h2>
+    <p class="muted">All take JSON arguments, return JSON. The agent decides when to use them. The server's Instructions nudge the agent to call <code>mesh_inbox</code> at the start of each turn.</p>
 
     <dl class="tools">
-      <dt>mesh_whoami</dt>     <dd>peer_id, name, port, version.</dd>
-      <dt>mesh_peers</dt>      <dd>list peers discovered on the LAN.</dd>
+      <dt>mesh_whoami</dt>     <dd>this node's peer_id, name, port, visibility.</dd>
+      <dt>mesh_peers</dt>      <dd>discovered peers (same-machine + LAN if open).</dd>
+      <dt>mesh_open_lan</dt>   <dd>extend visibility from loopback to LAN.</dd>
+      <dt>mesh_close_lan</dt>  <dd>drop back to loopback-only.</dd>
+      <dt>mesh_set_name</dt>   <dd>rename this node; re-advertises immediately.</dd>
       <dt>mesh_send</dt>       <dd>send a JSON message to a peer, or <code>"*"</code> to broadcast.</dd>
-      <dt>mesh_inbox</dt>      <dd>read incoming messages. <code>wait_seconds</code> long-polls.</dd>
-      <dt>mesh_share</dt>      <dd>register a file as shareable. Returns a handle.</dd>
-      <dt>mesh_fetch</dt>      <dd>fetch a shared blob from a peer. Inline or to disk.</dd>
-      <dt>mesh_shares</dt>     <dd>list local shares currently on offer.</dd>
+      <dt>mesh_inbox</dt>      <dd>read messages from peers; agent auto-calls each turn.</dd>
+      <dt>mesh_share</dt>      <dd>register a local file as fetchable by peers.</dd>
+      <dt>mesh_fetch</dt>      <dd>fetch a peer's shared file.</dd>
+      <dt>mesh_shares</dt>     <dd>list local shares.</dd>
       <dt>mesh_unshare</dt>    <dd>revoke a share by handle.</dd>
     </dl>
   </section>
@@ -709,86 +689,46 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
 
   <!-- TRUST MODEL ────────────────────────────────────────────── -->
   <section id="trust">
-    <p class="section-label"><span class="num">// 06</span>trust model</p>
+    <p class="section-label"><span class="num">// 06</span>trust &amp; encryption</p>
     <h2>Encrypted by construction.</h2>
     <p class="muted">
-      The threat model is a trusted LAN. Within that perimeter, four things are true.
+      Five things are true of every session.
     </p>
 
     <ul class="principles">
-      <li data-mark="✓" data-tone="ok">
+      <li data-mark="[x]" data-tone="ok">
         All traffic is mTLS 1.3, Ed25519-backed self-signed certs.
         <small>The encryption isn't optional, can't be downgraded, and the cert pinning happens against the peer_id from mDNS.</small>
       </li>
-      <li data-mark="✓" data-tone="ok">
-        Identity <em>is</em> the public key.
-        <small>The peer_id is the hex of the Ed25519 pubkey. Every authenticated request's "from" is the validated cert pubkey — body-claimed identity fields are cross-checked.</small>
+      <li data-mark="[x]" data-tone="ok">
+        Ephemeral identity, per session.
+        <small>Each process generates a fresh keypair on startup and throws it away on exit. No persisted identity on disk; no cross-session correlation.</small>
       </li>
-      <li data-mark="!" data-tone="warn">
-        Discovery is open.
-        <small>Anyone on the LAN advertising <code>_agentmesh._tcp</code> shows up in your peer table. Messages from unknown peers are flagged <code>first_contact: true</code> in the inbox — the agent decides.</small>
+      <li data-mark="[x]" data-tone="ok">
+        Loopback by default.
+        <small>A new session listens only on <code>127.0.0.1</code> and advertises only on <code>lo0</code>. The LAN doesn't see it until the agent calls <code>mesh_open_lan</code>.</small>
       </li>
-      <li data-mark="✓" data-tone="ok">
+      <li data-mark="[x]" data-tone="ok">
         Files require explicit share.
-        <small>Nothing on disk is reachable until the sender calls <code>mesh_share</code>. <code>allow_peers</code> restricts to specific peer_ids, and those restrictions can't be spoofed.</small>
+        <small>Nothing on disk is reachable until the sender calls <code>mesh_share</code>. <code>allow_peers</code> restricts to specific peer_ids; the fetcher's identity comes from the mTLS cert and can't be spoofed.</small>
+      </li>
+      <li data-mark="[!]" data-tone="warn">
+        Discovery (when LAN is open) is open.
+        <small>Anyone on the LAN advertising <code>_agentmesh._tcp</code> shows up in your peer table. mTLS prevents impersonation, but doesn't gate who shows up; first-contact messages are flagged in the inbox.</small>
       </li>
     </ul>
-  </section>
-
-  <hr class="rule">
-
-  <!-- OUT OF SCOPE ───────────────────────────────────────────── -->
-  <section id="scope">
-    <p class="section-label"><span class="num">// 07</span>not in the box</p>
-    <h2>What this isn't.</h2>
-    <ul class="principles">
-      <li data-mark="·" data-tone="warn">
-        No NAT traversal.
-        <small>This is a LAN tool. If you need agents across the open internet, you want a relay, not a mesh.</small>
-      </li>
-      <li data-mark="·" data-tone="warn">
-        No persistence.
-        <small>The inbox lives in memory. If the node dies, the queue dies with it.</small>
-      </li>
-      <li data-mark="·" data-tone="warn">
-        No file streaming primitives.
-        <small>A "file" is a single HTTPS GET. Want resumable transfer? Layer it on <code>mesh_share</code> + your own protocol.</small>
-      </li>
-    </ul>
-  </section>
-
-  <hr class="rule">
-
-  <!-- THE MESH (closing visual) ──────────────────────────────── -->
-  <section id="mesh">
-    <p class="section-label"><span class="num">// 08</span>the mesh</p>
-    <h2>Three nodes, one LAN.</h2>
-    <pre class="ascii">┌──────────────────────────────────────────────────────┐
-│   <span class="amber">_agentmesh._tcp.local</span>                              │
-│                                                      │
-│              <span class="hl">┌───┐</span>                                   │
-│              <span class="hl">│ A │</span>                                   │
-│              <span class="hl">└─┬─┘</span>                                   │
-│            ╱       ╲                                 │
-│           ╱   <span class="amber">[ 🔒 ]</span>  ╲                                │
-│          ╱    <span class="amber">mTLS</span>     ╲                               │
-│       <span class="hl">┌─┴─┐</span>         <span class="hl">┌─┴─┐</span>                             │
-│       <span class="hl">│ B │</span> ─────── <span class="hl">│ C │</span>                             │
-│       <span class="hl">└───┘</span>         <span class="hl">└───┘</span>                             │
-│                                                      │
-└──────────────────────────────────────────────────────┘</pre>
   </section>
 
   <!-- FOOTER ─────────────────────────────────────────────────── -->
   <footer>
     <pre class="fl">·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·
-        ─── eof ───
+        --- eof ---
 ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·   ·</pre>
     <div class="row">
       <span>
         <a href="https://github.com/BlueHeisenberg/agentmesh">BlueHeisenberg/agentmesh</a>
         · MIT
-        · v0.2.0
+        · v0.4.0
       </span>
       <span class="lan">_agentmesh._tcp.local</span>
     </div>
@@ -797,7 +737,7 @@ agentmesh: discovered peer <span class="you">node-C</span> (ad5c1908ee4c61aa…)
 </main>
 
 <script>
-  // copy buttons — vanilla, no framework
+  // copy buttons - vanilla, no framework
   document.querySelectorAll('.copy-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var target = document.getElementById(btn.dataset.target);

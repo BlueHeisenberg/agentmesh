@@ -21,12 +21,23 @@ type Message struct {
 }
 
 type Inbox struct {
-	mu      sync.Mutex
-	notify  chan struct{} // closed-and-replaced on each push
-	cap     int
-	cursor  int64
-	msgs    []Message
-	known   map[string]bool // peer_ids we've received from before
+	mu       sync.Mutex
+	notify   chan struct{} // closed-and-replaced on each push
+	cap      int
+	cursor   int64
+	msgs     []Message
+	known    map[string]bool // peer_ids we've received from before
+	onPushes []func(Message) // observers fired on every Push (best-effort)
+}
+
+// OnPush registers an observer fn that will be called for every new message
+// pushed into the inbox. Observers run in the calling goroutine after the
+// message has been appended; do non-blocking work or spawn your own goroutine.
+// Used for (a) MCP push notifications and (b) sessionstore persistence.
+func (ib *Inbox) OnPush(fn func(Message)) {
+	ib.mu.Lock()
+	ib.onPushes = append(ib.onPushes, fn)
+	ib.mu.Unlock()
 }
 
 func New(capacity int) *Inbox {
@@ -61,8 +72,16 @@ func (ib *Inbox) Push(fromPeerID, fromName, topic string, body json.RawMessage) 
 	}
 	old := ib.notify
 	ib.notify = make(chan struct{})
+	observers := append([]func(Message){}, ib.onPushes...)
 	ib.mu.Unlock()
 	close(old)
+	for _, fn := range observers {
+		// Best-effort: an observer panic shouldn't take down the listener.
+		func() {
+			defer func() { _ = recover() }()
+			fn(m)
+		}()
+	}
 	return m
 }
 

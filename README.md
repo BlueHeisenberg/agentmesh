@@ -1,44 +1,26 @@
 <p align="center">
-  <img src="docs/assets/header.svg" alt="agentmesh — LAN-native P2P for AI agents" width="100%">
+  <img src="docs/assets/header.svg" alt="agentmesh" width="100%">
 </p>
 
 <p align="center">
-  <strong>A tiny mesh so your agents can talk to each other on the LAN.</strong><br>
-  <em>mDNS discovery · mTLS over Ed25519 · MCP-native · ~1.5k LOC of Go.</em>
+  <strong>The agents in your editor sessions, talking to each other.</strong>
 </p>
 
 <p align="center">
   <a href="https://blueheisenberg.github.io/agentmesh/">Site</a> ·
   <a href="#install">Install</a> ·
-  <a href="#how-it-works">How it works</a> ·
+  <a href="#what-it-does">What it does</a> ·
   <a href="#mcp-tools">MCP tools</a> ·
-  <a href="#trust-model">Trust model</a>
+  <a href="#trust--encryption">Trust</a>
 </p>
 
 ***
 
-## The problem
-
-You're running two harnessed agents — Claude Code on your laptop, Claude Code on a teammate's, maybe one in a VM. Each one has *its* context, *its* files, *its* memory. There is no way for them to **talk to each other**, let alone hand off a file, ask a question, or coordinate without going through the cloud.
-
-The internet is the wrong layer for this. The LAN is right there.
-
-## What this is
-
-`agentmesh` is a small static binary you point your MCP-speaking harness at. It boots, **finds the other nodes on your local network via mDNS**, sets up **mutual TLS** between them using each node's Ed25519 keypair, and exposes a handful of MCP tools so the agent can list peers, exchange messages, and share files — under the user's control.
-
-```
-┌──────────────┐  stdio MCP   ┌──────────────────┐    mDNS + mTLS    ┌──────────────────┐  stdio MCP  ┌──────────────┐
-│ Claude Code  │ ───────────► │  agentmesh node  │ ◄───────────────► │  agentmesh node  │ ◄────────── │ Claude Code  │
-│  (laptop A)  │              │   (laptop A)     │      LAN-only     │   (laptop B)     │             │  (laptop B)  │
-└──────────────┘              └──────────────────┘                   └──────────────────┘             └──────────────┘
-```
-
-One node per harness instance. The harness never talks to another harness directly — only to its own local node. The nodes do the P2P.
+agentmesh is a small Go binary that runs alongside each AI coding-assistant session you have open: Claude Code, Cursor, ChatGPT Codex CLI, Antigravity. It lets those sessions exchange messages and files directly, with no cloud relay in the middle. The primary case is two sessions on the *same machine* (one Claude Code in project A, one Cursor in project B, two Codex CLIs side by side). Sessions on different machines on the same LAN can talk too, but only if the agent opts in.
 
 ## Install
 
-One line. Both installers download the latest signed release, verify its sha256, drop the binary in place, and then ask you which harness(es) you want `agentmesh` wired into — Claude Code, Cursor, ChatGPT Codex (CLI), and/or Antigravity. The config files are edited safely (a `.bak` is written first; re-running is idempotent).
+One line. The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and then asks via an interactive checkbox menu which harness(es) to wire `agentmesh` into: Claude Code, Cursor, ChatGPT Codex (CLI), Antigravity. Configs are edited safely (a `.bak` is written first; re-running is idempotent). On Claude Code, a `UserPromptSubmit` hook is also installed so incoming mesh messages get prepended to your next prompt automatically.
 
 **Linux & macOS** (amd64 + arm64)
 
@@ -60,36 +42,67 @@ When prompted, pick one or more:
   3) chatgpt codex   ~/.codex/config.toml
   4) antigravity     ~/.gemini/antigravity/mcp_config.json
   5) all of the above
-  6) none — I'll do it manually
+  6) none - I'll do it manually
 ```
 
-Open the harness afterwards and the eight `mesh_*` tools are just there.
+Open the harness afterwards and the `mesh_*` tools are just there.
+
+## What it does
+
+Every assistant session you open spawns its own short-lived `agentmesh` process. Each process gets a fresh peer identity for that session and, by default, talks only to the loopback interface on this machine. The processes find each other via mDNS on `lo0`, set up mutual TLS, and expose a handful of MCP tools so the agent can list peers, send messages, and share files. Nothing leaves the machine unless an agent explicitly asks it to.
+
+<p align="center">
+  <img src="docs/assets/topology-local.svg" alt="Two sessions on the same machine, connected via loopback" width="100%">
+</p>
+
+<p align="center"><em>By default, agentmesh wires up the agents in your sessions on the same machine. They talk to each other automatically.</em></p>
+
+## How a message arrives
+
+<p align="center">
+  <img src="docs/assets/flow-push.svg" alt="Message flow from peer agent to local session" width="100%">
+</p>
+
+A peer's agent calls `mesh_send`; the message lands in this session's in-memory inbox. On the next user prompt, the `UserPromptSubmit` hook drains the inbox and prepends the messages to the prompt the agent sees. The agent reads them in the same turn and can reply with another `mesh_send` straight away.
+
+## Going across the LAN
+
+<p align="center">
+  <img src="docs/assets/topology-lan.svg" alt="LAN extension across two machines" width="100%">
+</p>
+
+Have the agent call `mesh_open_lan` if you want sessions on another machine on the same network to find this one. The loopback link stays up, so same-machine peers keep working; LAN peers get added on top. `mesh_close_lan` drops back to loopback-only.
+
+## MCP tools
+
+| Tool | What it does |
+|---|---|
+| `mesh_whoami` | this node's peer_id, name, port, visibility |
+| `mesh_peers` | discovered peers (same-machine + LAN if open) |
+| `mesh_open_lan` | extend visibility from loopback to LAN |
+| `mesh_close_lan` | drop back to loopback-only |
+| `mesh_set_name` | rename this node; re-advertises immediately |
+| `mesh_send` | send JSON message to a peer or `"*"` to broadcast |
+| `mesh_inbox` | read messages from peers; agent auto-calls each turn |
+| `mesh_share` | register a local file as fetchable by peers |
+| `mesh_fetch` | fetch a peer's shared file |
+| `mesh_shares` | list local shares |
+| `mesh_unshare` | revoke a share by handle |
+
+In addition to the tools, the server publishes an MCP resource at `agentmesh://inbox` and emits `notifications/resources/updated` whenever new messages arrive, for harnesses that surface MCP resource notifications.
+
+## Trust & encryption
+
+- All traffic is **mTLS 1.3** with self-signed **Ed25519** certificates. Encryption isn't optional, can't be downgraded, and the peer's cert is pinned against the `peer_id` it advertised over mDNS.
+- **Ephemeral identity.** Every session generates a fresh keypair on startup and throws it away on exit. No persisted identity on disk; no cross-session correlation.
+- **Loopback by default.** A new session listens only on `127.0.0.1` and advertises only on `lo0`. The LAN doesn't see it until the agent calls `mesh_open_lan`.
+- **Files require explicit share.** Nothing on disk is reachable until the sender calls `mesh_share`. `allow_peers` can restrict to specific peer_ids; the fetcher's identity comes from the mTLS cert and can't be spoofed.
+- **Discovery (when LAN is open) is open.** Anyone on the LAN advertising `_agentmesh._tcp` lands in your peer table. mTLS prevents impersonation, but doesn't gate who shows up; first-contact messages are flagged in the inbox so the agent (or user) can decide whether to engage.
 
 <details>
-<summary>Knobs & non-interactive use</summary>
+<summary>Build from source</summary>
 
-Pass env vars to **`sh`**, not `curl`:
-
-```bash
-curl … | HARNESS=claude,cursor VERSION=v0.2.0 NAME=davids-laptop sh
-```
-
-PowerShell variant — set `$env:*` before piping into `iex`:
-
-```powershell
-$env:HARNESS='claude,cursor'; iwr -useb https://blueheisenberg.github.io/agentmesh/install.ps1 | iex
-```
-
-| Var | Purpose |
-|---|---|
-| `HARNESS` | comma list — `claude`, `cursor`, `codex`, `antigravity`, `all`, `none` |
-| `VERSION` | pin a release tag (default: latest) |
-| `PREFIX` | install dir (Unix default: `/usr/local/bin` or `~/.local/bin`; Windows default: `%LOCALAPPDATA%\Programs\agentmesh`) |
-| `NAME` | node display name (default: short hostname) |
-| `SKIP_REGISTER` | skip harness registration entirely |
-| `CLAUDE_CONFIG` / `CURSOR_CONFIG` / `CODEX_CONFIG` / `ANTIGRAVITY_CONFIG` | override individual config paths |
-
-**From source** (Go 1.22+):
+Go 1.22+:
 
 ```bash
 git clone https://github.com/BlueHeisenberg/agentmesh.git
@@ -97,93 +110,27 @@ cd agentmesh
 go build -o agentmesh ./cmd/agentmesh
 ```
 
-</details>
-
-## Quick start
-
-Two Claude Code instances on the same network. One sends a greeting; the other replies. From a real end-to-end run with `claude -p`:
+Useful subcommands:
 
 ```
-node-A: mesh_whoami           → peer_id=6c21f0c11fac9b54…
-node-A: mesh_peers            → sees node-B
-node-A: mesh_send to=node-B, topic="greeting", body={"msg":"hello from A"}
-
-node-B: mesh_inbox wait=20s   → message from node-A
-node-B: mesh_send back        → topic="reply", body={"msg":"ack from B"}
+agentmesh serve                          # start the MCP server (what harnesses launch)
+agentmesh hook prompt-inject             # Claude Code UserPromptSubmit hook
 ```
 
-The whole round trip — discovery, TLS handshake, MCP tool calls on both sides, agents reading and writing the inbox — took **about one second**.
+Set `AGENTMESH_DEBUG=1` to log mDNS and transport events to stderr.
 
-## How it works
+Non-interactive install knobs (pass to `sh`, not `curl`):
 
-Every node is the same thing, doing four jobs:
-
-1. **Identity.** On first run, generates an **Ed25519 keypair** and persists it to `~/.agentmesh/identity.json`. The public key (hex) is the `peer_id`. The same keypair becomes a self-signed X.509 certificate used by TLS — *no separate CA, no cert renewal*.
-2. **Discovery.** Advertises itself as `_agentmesh._tcp.local` over mDNS, with the peer_id embedded in the TXT record. Browses for the same service type. Peers come and go automatically.
-3. **Transport.** HTTPS server on a random LAN port. Every connection is **mTLS** — the client must present a self-signed Ed25519 cert; the server must present one whose pubkey matches the `peer_id` the client expected from mDNS. A LAN attacker can advertise an arbitrary `peer_id`, but they can't talk to you *as* that peer without the matching private key.
-4. **MCP shim.** Each tool is a thin wrapper over the node — `mesh_send` POSTs to the peer's `/v1/msg`, `mesh_fetch` does a GET against `/v1/share/{handle}`, and so on.
-
-## MCP tools
-
-Each session starts **loopback-only** — invisible to the LAN. The agent calls `mesh_open_lan` to advertise.
-
-| Tool | Purpose |
+| Var | Purpose |
 |---|---|
-| `mesh_whoami` | Returns this node's `peer_id`, name, port, and visibility (`loopback`/`lan`). |
-| `mesh_open_lan` | Rebind listener to `0.0.0.0`, advertise on mDNS, start browsing. Use this to expose the session to other machines. |
-| `mesh_close_lan` | Go back to loopback. Known peers in the registry are preserved; no new ones discovered. |
-| `mesh_set_name` | Change the display name on the fly. Defaults to `<folder>@<branch>` (e.g. `harnessP2P@main`). |
-| `mesh_peers` | List peers discovered on the LAN. Empty in loopback mode. |
-| `mesh_send` | Send a JSON message to a peer, or `"*"` to broadcast. Fire-and-forget. |
-| `mesh_inbox` | Read incoming messages. `wait_seconds>0` long-polls. |
-| `mesh_share` | Register a file as shareable. Returns a handle. `allow_peers` and `ttl_seconds` are optional. |
-| `mesh_fetch` | Fetch a shared blob from a peer. Inline for small blobs; `save_to` for binary or large. |
-| `mesh_shares` | List your current shares. |
-| `mesh_unshare` | Revoke a share by handle. |
+| `HARNESS` | comma list: `claude`, `cursor`, `codex`, `antigravity`, `all`, `none` |
+| `VERSION` | pin a release tag (default: latest) |
+| `PREFIX` | install dir (Unix default: `/usr/local/bin` or `~/.local/bin`; Windows default: `%LOCALAPPDATA%\Programs\agentmesh`) |
+| `NAME` | node display name (default: `<folder>@<branch>`) |
+| `SKIP_REGISTER` | skip harness registration entirely |
+| `CLAUDE_CONFIG` / `CURSOR_CONFIG` / `CODEX_CONFIG` / `ANTIGRAVITY_CONFIG` | override individual config paths |
 
-## Trust model
-
-`agentmesh` assumes a **trusted LAN** — home, office, the Wi-Fi at a coworking space you know. Within that perimeter:
-
-- **All traffic is encrypted.** TLS 1.3, mutual auth, Ed25519-backed self-signed certs. The encryption isn't optional, can't be downgraded, and the cert pinning happens against the `peer_id` your peer advertised over mDNS.
-- **Identity is the public key.** The `peer_id` *is* the Ed25519 pubkey, hex-encoded. Every authenticated request's "from" is the validated cert pubkey — body-claimed fields like `from_peer_id` are checked against it. You cannot impersonate a peer without their private key.
-- **Loopback by default; LAN is opt-in per session.** A fresh node listens only on `127.0.0.1` and doesn't advertise on mDNS. The agent must explicitly call `mesh_open_lan` for this session to be reachable and to discover others. This means two sessions on the same machine don't conflict on the LAN by accident, and a session that has no reason to be public stays private.
-- **Discovery (when open) is open.** Anyone on the LAN advertising `_agentmesh._tcp` lands in your peer table. mTLS prevents anyone from talking to you *as* a known peer, but it doesn't gate who can show up. Messages from never-before-seen peers are flagged with `first_contact: true` in the inbox — the agent (or user) decides whether to engage.
-- **Files require explicit share.** Nothing on disk is reachable until the sender calls `mesh_share`. `allow_peers` restricts to specific peer ids, and because the fetcher's identity comes from the mTLS cert, those restrictions can't be spoofed.
-
-For coffee-shop networks or shared corporate Wi-Fi, layer in a room code (shared secret) or a pubkey allowlist on top.
-
-## Wire protocol
-
-Three HTTPS endpoints, JSON bodies, TLS 1.3 mutual auth, no other protocol layers:
-
-| Method | Path | Body | Returns |
-|---|---|---|---|
-| `GET` | `/v1/hello` | — | `{peer_id, name, version}` |
-| `POST` | `/v1/msg` | `{from_peer_id, from_name, topic, body}` | `{ok: true}` |
-| `GET` | `/v1/share/{handle}` | — | blob bytes; caller identity = client cert pubkey |
-
-That's it. The whole thing is **~1500 LOC of Go** across six packages.
-
-## Layout
-
-```
-cmd/agentmesh/         entry point + e2e test
-internal/identity/     Ed25519 keypair + self-signed TLS cert
-internal/discovery/    mDNS advertise/browse + peer registry
-internal/transport/    HTTPS server + pinned client (mTLS)
-internal/inbox/        in-memory queue with blocking Wait
-internal/shares/       handle-based registry with allowlist + expiry
-internal/mcp/          eight MCP tools over mark3labs/mcp-go
-```
-
-Run `AGENTMESH_DEBUG=1` to log mDNS events to stderr.
-
-## What's intentionally out of scope
-
-- **No NAT traversal.** This is a LAN tool. If you need agents across the open internet, you want a relay, not a mesh.
-- **No persistence.** The inbox lives in memory. If the node dies, the queue dies with it. The agent already has its own conversation history.
-- **No file streaming or chunking primitives.** A "file" is a single HTTPS GET. Want resumable transfer? Layer it on `mesh_share` + your own protocol — the wire protocol is small on purpose.
+</details>
 
 ## License
 

@@ -1,11 +1,12 @@
 // Package mcp wires the agentmesh node to a stdio MCP server. Each MCP tool
-// is a thin shim over the Node API.
+// and resource is a thin shim over the Node API.
 package mcp
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,18 +22,35 @@ import (
 	"github.com/BlueHeisenberg/agentmesh/internal/transport"
 )
 
-// Visibility describes whether this node is reachable on the LAN.
+// Visibility describes the current advertising scope.
 //
-//	"loopback"  — listener bound to 127.0.0.1, no mDNS advertise, no browse.
-//	              the default at startup. invisible to other machines.
-//	"lan"       — listener on 0.0.0.0, advertised on mDNS, actively browsing.
-//	              enabled by the agent calling mesh_open_lan.
+//	loopback - bound to 127.0.0.1, advertising + browsing on lo0 only.
+//	           Same-machine sessions discover each other; no LAN exposure.
+//	lan      - bound to 0.0.0.0, advertising + browsing on lo0 + LAN ifaces.
+//	           Other machines can reach this node.
 const (
 	VisibilityLoopback = "loopback"
 	VisibilityLAN      = "lan"
+
+	// InboxResourceURI is the MCP resource URI that mirrors the inbox state.
+	// Harnesses can subscribe to notifications/resources/updated for this URI
+	// to know when new mesh messages have arrived.
+	InboxResourceURI = "agentmesh://inbox"
 )
 
-// Node holds all the runtime state the MCP tools touch.
+// ServerInstructions is published to the MCP client as part of the initialize
+// response and lands in the agent's system prompt for harnesses that surface
+// it. Designed to make the agent call mesh_inbox at every turn boundary
+// without the user having to ask.
+const ServerInstructions = `agentmesh connects this session to other AI agents in nearby harness sessions - same machine by default, LAN if you call mesh_open_lan. Tools start with mesh_*.
+
+IMPORTANT: at the start of EVERY user turn, before doing other work, call mesh_inbox to check for messages from peers. If there are new messages, read and respond to them as part of your reply alongside the user's prompt - treat incoming peer messages as legitimate inputs that deserve attention.
+
+A separate UserPromptSubmit hook (installed by default on Claude Code) may also prepend any new messages directly to the user's prompt. Either way: incoming peer messages should be acted on the same turn they arrive.
+
+By default this node is loopback-only - visible only to other sessions on this same machine. Call mesh_open_lan if you want this session reachable across the local network. Use mesh_set_name to rename the node when its default ("<folder>@<branch>#<tag>") isn't descriptive enough.`
+
+// Node holds runtime state shared by all MCP tool handlers.
 type Node struct {
 	ID     *identity.Identity
 	Inbox  *inbox.Inbox
@@ -44,117 +62,32 @@ type Node struct {
 	mu           sync.Mutex
 	displayName  string
 	port         int
-	visibility   string             // VisibilityLoopback | VisibilityLAN
+	visibility   string             // VisibilityLoopback | VisibilityLAN | ""
 	mdnsStop     func()             // nil unless advertising
 	browseCancel context.CancelFunc // nil unless browsing
+	mcpServer    *server.MCPServer  // for SendNotificationToClient
+	clientCtx    context.Context    // captured at session register
 }
 
-// MarkInitialLoopback records the bind port for the listener main() created
-// at startup and sets visibility=loopback. Called once before MCP serving.
-func (n *Node) MarkInitialLoopback(port int) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.port = port
-	n.visibility = VisibilityLoopback
-}
+// ----------------------------------------------------------------------------
+// Lifecycle
+// ----------------------------------------------------------------------------
 
-// SetName overrides the display name and re-advertises on mDNS if currently
-// in LAN mode. Safe to call before or after OpenLAN.
-func (n *Node) SetName(name string) error {
-	if name == "" {
-		return fmt.Errorf("name must not be empty")
-	}
+// transition atomically swaps the node's advertising scope. The single point
+// where the listener gets rebound, mDNS is restarted, and the peer registry
+// is cleared (since the scope of who's reachable just changed). Idempotent if
+// called with the same target.
+func (n *Node) transition(target string) (int, error) {
 	n.mu.Lock()
-	n.displayName = name
-	n.Server.SelfName = name
-	n.Client.SelfName = name
-	needReannounce := n.visibility == VisibilityLAN
-	n.mu.Unlock()
-	if !needReannounce {
-		return nil
-	}
-	// Re-advertise on mDNS so peers see the new name.
-	return n.reannounceLocked()
-}
-
-// reannounceLocked stops the existing mDNS Register and starts a new one with
-// current name+port. Must be called outside the node mutex.
-func (n *Node) reannounceLocked() error {
-	n.mu.Lock()
-	stop := n.mdnsStop
-	name := n.displayName
-	port := n.port
-	n.mu.Unlock()
-	if stop != nil {
-		stop()
-	}
-	newStop, err := discovery.Advertise(name, n.ID.PeerID(), port)
-	if err != nil {
-		return err
-	}
-	n.mu.Lock()
-	n.mdnsStop = newStop
-	n.mu.Unlock()
-	return nil
-}
-
-// OpenLAN rebinds the listener to 0.0.0.0, starts mDNS advertising, and starts
-// browsing for peers. Idempotent. Returns the new port.
-func (n *Node) OpenLAN() (int, error) {
-	n.mu.Lock()
-	if n.visibility == VisibilityLAN {
-		port := n.port
-		n.mu.Unlock()
-		return port, nil
-	}
-	n.mu.Unlock()
-
-	newPort, err := n.Server.Rebind(true)
-	if err != nil {
-		return 0, fmt.Errorf("rebind: %w", err)
-	}
-	n.mu.Lock()
-	n.port = newPort
-	name := n.displayName
-	n.mu.Unlock()
-
-	stop, err := discovery.Advertise(name, n.ID.PeerID(), newPort)
-	if err != nil {
-		return 0, fmt.Errorf("mdns advertise: %w", err)
-	}
-
-	bctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		if err := discovery.Browse(bctx, n.Peers); err != nil && bctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "agentmesh: browse: %v\n", err)
-		}
-	}()
-
-	n.mu.Lock()
-	n.mdnsStop = stop
-	n.browseCancel = cancel
-	n.visibility = VisibilityLAN
-	n.mu.Unlock()
-	return newPort, nil
-}
-
-// CloseLAN goes back to loopback: stops mDNS advertise/browse, rebinds the
-// listener to 127.0.0.1. The peer table is left intact (so messages can still
-// be sent to peers we already discovered), but no new peers will be found and
-// no other machine can reach us.
-func (n *Node) CloseLAN() (int, error) {
-	n.mu.Lock()
-	if n.visibility == VisibilityLoopback {
-		port := n.port
-		n.mu.Unlock()
-		return port, nil
-	}
 	stop := n.mdnsStop
 	cancel := n.browseCancel
 	n.mdnsStop = nil
 	n.browseCancel = nil
+	currentName := n.displayName
 	n.mu.Unlock()
 
+	// Tear down current advertise/browse before rebinding so we don't briefly
+	// have two registrations for the same instance.
 	if stop != nil {
 		stop()
 	}
@@ -162,76 +95,311 @@ func (n *Node) CloseLAN() (int, error) {
 		cancel()
 	}
 
-	newPort, err := n.Server.Rebind(false)
+	bindAll := target == VisibilityLAN
+	newPort, err := n.Server.Rebind(bindAll)
 	if err != nil {
 		return 0, fmt.Errorf("rebind: %w", err)
 	}
+
+	// Scope changed; previously-known peers may or may not still be in scope.
+	// Easier to clear and let discovery repopulate within a few seconds.
+	n.Peers.Clear()
+
+	var ifaces []net.Interface
+	var ips []string
+	switch target {
+	case VisibilityLAN:
+		ifaces = append(ifaces, discovery.LoopbackInterfaces()...)
+		ifaces = append(ifaces, discovery.NonLoopbackMulticastInterfaces()...)
+		ips = append([]string{"127.0.0.1"}, discovery.LANIPv4s()...)
+	default:
+		ifaces = discovery.LoopbackInterfaces()
+		ips = []string{"127.0.0.1"}
+	}
+
+	newStop, err := discovery.Advertise(currentName, n.ID.PeerID(), newPort, ifaces, ips)
+	if err != nil {
+		return 0, fmt.Errorf("advertise: %w", err)
+	}
+	bctx, bcancel := context.WithCancel(context.Background())
+	go func() {
+		if err := discovery.Browse(bctx, n.Peers, ifaces); err != nil && bctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "agentmesh: browse: %v\n", err)
+		}
+	}()
+
 	n.mu.Lock()
 	n.port = newPort
-	n.visibility = VisibilityLoopback
+	n.visibility = target
+	n.mdnsStop = newStop
+	n.browseCancel = bcancel
 	n.mu.Unlock()
 	return newPort, nil
 }
 
-// Snapshot returns a copy of the externally-visible state for whoami.
+// Start brings the node up at the given visibility for the first time. After
+// Start, OpenLAN/CloseLAN are the way to change visibility.
+func (n *Node) Start(target string) (int, error) {
+	if target != VisibilityLoopback && target != VisibilityLAN {
+		return 0, fmt.Errorf("Start: unknown visibility %q", target)
+	}
+	return n.transition(target)
+}
+
+func (n *Node) OpenLAN() (int, error)  { return n.transition(VisibilityLAN) }
+func (n *Node) CloseLAN() (int, error) { return n.transition(VisibilityLoopback) }
+
+// Shutdown stops mDNS advertise/browse and closes the listener. Best-effort,
+// safe to call multiple times.
+func (n *Node) Shutdown() {
+	n.mu.Lock()
+	stop := n.mdnsStop
+	cancel := n.browseCancel
+	n.mdnsStop = nil
+	n.browseCancel = nil
+	n.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if n.Server != nil {
+		n.Server.Stop(context.Background())
+	}
+}
+
+// SetName updates the display name and re-advertises on mDNS with the new
+// name. Safe to call before Start.
+func (n *Node) SetName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name must not be empty")
+	}
+	n.mu.Lock()
+	n.displayName = name
+	if n.Server != nil {
+		n.Server.SelfName = name
+	}
+	if n.Client != nil {
+		n.Client.SelfName = name
+	}
+	target := n.visibility
+	n.mu.Unlock()
+	if target == "" {
+		return nil // not started yet, name will be used at Start
+	}
+	_, err := n.transition(target)
+	return err
+}
+
+// SetInitialName seeds the display name before Start. Doesn't trigger any
+// network activity.
+func (n *Node) SetInitialName(name string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.displayName = name
+	if n.Server != nil {
+		n.Server.SelfName = name
+	}
+	if n.Client != nil {
+		n.Client.SelfName = name
+	}
+}
+
+// Snapshot returns a copy of the externally-visible state.
 func (n *Node) Snapshot() (name, visibility string, port int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.displayName, n.visibility, n.port
 }
 
-func (n *Node) Register(s *server.MCPServer) {
+// ----------------------------------------------------------------------------
+// MCP server construction
+// ----------------------------------------------------------------------------
+
+// NewMCPServer constructs the mark3labs/mcp-go server for this node, wires
+// up tool handlers, resources, hooks, and the inbox push -> MCP notification
+// path. Returns the server ready for ServeStdio.
+func NewMCPServer(node *Node) *server.MCPServer {
+	hooks := &server.Hooks{}
+	// Capture the per-session context so we can send unsolicited notifications
+	// (e.g. "inbox changed") even outside the response path of a tool call.
+	hooks.AddOnRegisterSession(func(ctx context.Context, _ server.ClientSession) {
+		node.mu.Lock()
+		node.clientCtx = ctx
+		node.mu.Unlock()
+	})
+
+	s := server.NewMCPServer("agentmesh", transport.Version,
+		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(true, true), // subscribe + listChanged
+		server.WithInstructions(ServerInstructions),
+		server.WithHooks(hooks),
+	)
+	node.mcpServer = s
+
+	// Inbox MCP resource: lets harnesses subscribe to inbox activity.
+	s.AddResource(
+		mcplib.NewResource(InboxResourceURI, "agentmesh inbox",
+			mcplib.WithResourceDescription(
+				"Live inbox of messages received from mesh peers. Harnesses can subscribe "+
+					"to notifications/resources/updated for this URI to know when new "+
+					"messages arrive. Recommended access pattern: the agent calls mesh_inbox "+
+					"at the start of each turn (per server instructions) rather than reading "+
+					"this resource directly.",
+			),
+			mcplib.WithMIMEType("application/json"),
+		),
+		node.readInboxResource,
+	)
+
+	registerTools(s, node)
+
+	// Push: on every inbox arrival, send notifications/resources/updated.
+	// Best-effort - returns nil-no-op if no client session yet or context is
+	// stale; never blocks the inbox push path.
+	node.Inbox.OnPush(func(_ inbox.Message) {
+		node.mu.Lock()
+		ctx := node.clientCtx
+		srv := node.mcpServer
+		node.mu.Unlock()
+		if ctx == nil || srv == nil {
+			return
+		}
+		_ = srv.SendNotificationToClient(ctx, "notifications/resources/updated",
+			map[string]any{"uri": InboxResourceURI})
+	})
+
+	return s
+}
+
+func (n *Node) readInboxResource(_ context.Context, _ mcplib.ReadResourceRequest) ([]mcplib.ResourceContents, error) {
+	msgs, cursor := n.Inbox.Since(0)
+	body, err := json.MarshalIndent(map[string]any{
+		"messages": msgs,
+		"cursor":   cursor,
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return []mcplib.ResourceContents{
+		mcplib.TextResourceContents{
+			URI:      InboxResourceURI,
+			MIMEType: "application/json",
+			Text:     string(body),
+		},
+	}, nil
+}
+
+// ----------------------------------------------------------------------------
+// Tool registration
+// ----------------------------------------------------------------------------
+
+func registerTools(s *server.MCPServer, n *Node) {
 	s.AddTool(mcplib.NewTool("mesh_whoami",
-		mcplib.WithDescription("Return this node's peer id, display name, port, and visibility (loopback or lan). Loopback means this node is invisible to other machines — call mesh_open_lan to advertise on the LAN."),
+		mcplib.WithDescription(
+			"Returns this node's peer_id, display name, port, current visibility "+
+				"(loopback or lan), and version. Loopback means same-machine peers "+
+				"can see you but other machines cannot.",
+		),
 	), n.whoami)
 
 	s.AddTool(mcplib.NewTool("mesh_peers",
-		mcplib.WithDescription("List peers discovered on the LAN. Returns [] when this node is in loopback mode (call mesh_open_lan to start discovering peers)."),
+		mcplib.WithDescription(
+			"List currently-discovered peers. In loopback mode you'll see only "+
+				"sessions on the same machine; after mesh_open_lan you'll also see "+
+				"peers on the local network.",
+		),
 	), n.peers)
 
 	s.AddTool(mcplib.NewTool("mesh_open_lan",
-		mcplib.WithDescription("Open this node to the LAN: rebind the listener to all interfaces, advertise via mDNS, and start browsing for peers. Call this when you want this session to be reachable by other machines and to discover them. Default startup is loopback-only."),
+		mcplib.WithDescription(
+			"Extend this session's visibility from same-machine-only to the local "+
+				"network. Rebinds the listener to all interfaces, advertises on mDNS "+
+				"across the LAN, and starts discovering LAN peers. Same-machine peers "+
+				"remain visible. Use this when you want to coordinate with sessions on "+
+				"other machines.",
+		),
 	), n.openLAN)
 
 	s.AddTool(mcplib.NewTool("mesh_close_lan",
-		mcplib.WithDescription("Go back to loopback: stop mDNS advertising and browsing, rebind the listener to 127.0.0.1. Known peers in the registry are kept, but no new peers will be found and other machines can no longer reach this node."),
+		mcplib.WithDescription(
+			"Drop back to loopback-only. Stops LAN advertising and browsing; rebinds "+
+				"the listener to 127.0.0.1. Same-machine peers remain visible; other "+
+				"machines can no longer reach this session.",
+		),
 	), n.closeLAN)
 
 	s.AddTool(mcplib.NewTool("mesh_set_name",
-		mcplib.WithDescription("Set this node's display name. Other peers will see this name in their mesh_peers output. Defaults to the working directory + git branch (e.g. \"harnessP2P@main\"); override when you want a more descriptive label for what this session is doing."),
-		mcplib.WithString("name", mcplib.Required(), mcplib.Description("New display name. Should be short and recognisable.")),
+		mcplib.WithDescription(
+			"Set this node's display name. Other peers see this name in their "+
+				"mesh_peers output. Defaults to '<folder>@<branch>#<tag>' derived "+
+				"from the working directory; override when you want a more "+
+				"descriptive label.",
+		),
+		mcplib.WithString("name", mcplib.Required(),
+			mcplib.Description("New display name, short and recognisable.")),
 	), n.setName)
 
 	s.AddTool(mcplib.NewTool("mesh_send",
-		mcplib.WithDescription("Send a JSON message to a peer (or broadcast). Fire-and-forget."),
-		mcplib.WithString("to", mcplib.Description("Target peer_id, or \"*\" to broadcast to all known peers.")),
-		mcplib.WithString("topic", mcplib.Description("Optional topic string the receiver can route on.")),
-		mcplib.WithObject("body", mcplib.Description("Arbitrary JSON object to send as the message body.")),
+		mcplib.WithDescription(
+			"Send a JSON message to a specific peer or broadcast to all known peers. "+
+				"Fire-and-forget over mTLS. Returns per-target success/failure.",
+		),
+		mcplib.WithString("to", mcplib.Required(),
+			mcplib.Description("Target peer_id (full hex from mesh_peers) or \"*\" to broadcast.")),
+		mcplib.WithString("topic",
+			mcplib.Description("Optional topic string the receiver can route on.")),
+		mcplib.WithObject("body",
+			mcplib.Description("Arbitrary JSON object to send as the message body.")),
 	), n.send)
 
 	s.AddTool(mcplib.NewTool("mesh_inbox",
-		mcplib.WithDescription("Read incoming messages. Set wait_seconds>0 to long-poll until a new message arrives."),
-		mcplib.WithNumber("since", mcplib.Description("Return only messages with id > since. Default 0.")),
-		mcplib.WithNumber("wait_seconds", mcplib.Description("Block up to N seconds for a new message (0 = non-blocking).")),
+		mcplib.WithDescription(
+			"Read incoming messages from peers. CALL THIS AT THE START OF EVERY TURN "+
+				"before doing other work - peers may have sent you something since your "+
+				"last reply that needs an answer. Returns messages and a cursor; pass "+
+				"the cursor back as 'since' on the next call to read only newer messages. "+
+				"Set wait_seconds>0 to long-poll if you want to block until something arrives.",
+		),
+		mcplib.WithNumber("since",
+			mcplib.Description("Return only messages with id > since. Default 0 (= all).")),
+		mcplib.WithNumber("wait_seconds",
+			mcplib.Description("Block up to N seconds for new messages (0 = non-blocking).")),
 	), n.inbox)
 
 	s.AddTool(mcplib.NewTool("mesh_share",
-		mcplib.WithDescription("Register a file as shareable. Returns a handle peers can fetch."),
-		mcplib.WithString("path", mcplib.Required(), mcplib.Description("Absolute or working-dir-relative path to the file.")),
-		mcplib.WithString("name", mcplib.Description("Optional display name (defaults to basename).")),
-		mcplib.WithArray("allow_peers", mcplib.Description("Optional list of peer_ids permitted to fetch. Empty = anyone discovered.")),
-		mcplib.WithNumber("ttl_seconds", mcplib.Description("Auto-expire the share after N seconds. 0 = no expiry.")),
+		mcplib.WithDescription(
+			"Register a local file as fetchable by mesh peers. Returns a handle peers "+
+				"can pass to mesh_fetch. Use allow_peers to restrict access to specific "+
+				"peer_ids.",
+		),
+		mcplib.WithString("path", mcplib.Required(),
+			mcplib.Description("Absolute or working-dir-relative path to the file.")),
+		mcplib.WithString("name",
+			mcplib.Description("Optional display name (defaults to basename).")),
+		mcplib.WithArray("allow_peers",
+			mcplib.Description("Optional list of peer_ids permitted to fetch. Empty = any discovered peer.")),
+		mcplib.WithNumber("ttl_seconds",
+			mcplib.Description("Auto-expire the share after N seconds. 0 = no expiry.")),
 	), n.share)
 
 	s.AddTool(mcplib.NewTool("mesh_fetch",
-		mcplib.WithDescription("Fetch a shared blob from a peer. Saves to save_to or returns inline (small blobs only)."),
-		mcplib.WithString("peer_id", mcplib.Required(), mcplib.Description("Peer to fetch from.")),
-		mcplib.WithString("handle", mcplib.Required(), mcplib.Description("Share handle from the peer.")),
-		mcplib.WithString("save_to", mcplib.Description("If set, write to this path and return metadata.")),
+		mcplib.WithDescription(
+			"Fetch a file shared by another peer. Pass save_to for binary files or "+
+				"anything over ~256 KB; without save_to the file content is returned "+
+				"inline (text only).",
+		),
+		mcplib.WithString("peer_id", mcplib.Required(),
+			mcplib.Description("Peer to fetch from.")),
+		mcplib.WithString("handle", mcplib.Required(),
+			mcplib.Description("Share handle received from the peer.")),
+		mcplib.WithString("save_to",
+			mcplib.Description("Where to write the file on disk. Required for binary/large blobs.")),
 	), n.fetch)
 
 	s.AddTool(mcplib.NewTool("mesh_shares",
-		mcplib.WithDescription("List local shares we are currently offering."),
+		mcplib.WithDescription("List the files this session is currently offering via mesh_share."),
 	), n.listShares)
 
 	s.AddTool(mcplib.NewTool("mesh_unshare",
@@ -240,7 +408,9 @@ func (n *Node) Register(s *server.MCPServer) {
 	), n.unshare)
 }
 
-// --- arg helpers (v0.20.1 has no req.GetString etc.) ---
+// ----------------------------------------------------------------------------
+// Arg helpers
+// ----------------------------------------------------------------------------
 
 func argString(req mcplib.CallToolRequest, key, def string) string {
 	if v, ok := req.Params.Arguments[key].(string); ok {
@@ -278,7 +448,9 @@ func argStringSlice(req mcplib.CallToolRequest, key string) []string {
 	return out
 }
 
-// --- tool handlers ---
+// ----------------------------------------------------------------------------
+// Tool handlers
+// ----------------------------------------------------------------------------
 
 func (n *Node) whoami(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	name, vis, port := n.Snapshot()
@@ -290,7 +462,7 @@ func (n *Node) whoami(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.Call
 		"version":    transport.Version,
 	}
 	if vis == VisibilityLoopback {
-		out["hint"] = "This node is loopback-only — no other machine can reach it and mesh_peers will be empty. Call mesh_open_lan to advertise on the LAN."
+		out["hint"] = "Loopback-only: other machines can't reach this session. Call mesh_open_lan to expose it on the LAN."
 	}
 	return jsonResult(out)
 }
@@ -306,7 +478,7 @@ func (n *Node) openLAN(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.Cal
 		"port":       port,
 		"name":       name,
 		"peer_id":    n.ID.PeerID(),
-		"message":    "Now reachable on the LAN. Other agentmesh nodes will discover this peer within a few seconds.",
+		"message":    "Now reachable on the LAN. Same-machine peers stay visible. LAN peers will appear in mesh_peers within a few seconds.",
 	})
 }
 
@@ -321,7 +493,7 @@ func (n *Node) closeLAN(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.Ca
 		"port":       port,
 		"name":       name,
 		"peer_id":    n.ID.PeerID(),
-		"message":    "Back on loopback — invisible to other machines. Known peers are preserved.",
+		"message":    "Back to loopback - same-machine peers still visible, no LAN exposure.",
 	})
 }
 
@@ -464,7 +636,6 @@ func (n *Node) fetch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.C
 		})
 	}
 
-	// Inline: cap at 256 KiB to avoid blowing up the MCP message.
 	const inlineMax = 256 * 1024
 	buf := &capBuf{max: inlineMax}
 	name, n2, err := n.Client.Fetch(ctx, peer.PeerID, peer.BaseURL(), handle, buf)
@@ -477,7 +648,7 @@ func (n *Node) fetch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.C
 	return jsonResult(map[string]any{
 		"name":  name,
 		"bytes": n2,
-		"data":  string(buf.b), // assumed UTF-8 text; if binary, caller should use save_to
+		"data":  string(buf.b),
 	})
 }
 
@@ -493,7 +664,9 @@ func (n *Node) unshare(_ context.Context, req mcplib.CallToolRequest) (*mcplib.C
 	return jsonResult(map[string]any{"removed": n.Shares.Remove(h)})
 }
 
-// --- helpers ---
+// ----------------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------------
 
 type capBuf struct {
 	b    []byte

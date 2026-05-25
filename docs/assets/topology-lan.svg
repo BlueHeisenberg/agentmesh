@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="1200" height="540" role="img" aria-label="agentmesh LAN topology — same-machine pair plus a teammate's machine joined via mesh_open_lan">
+  <defs>
+    <pattern id="gridN" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 L0 0 0 40" fill="none" stroke="#1A1A1A" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="540" fill="#0A0908"/>
+  <rect width="1200" height="540" fill="url(#gridN)" opacity="0.5"/>
+
+  <!-- frame ticks -->
+  <g stroke="#E8E6E1" stroke-width="1.5" fill="none">
+    <path d="M24 36 L24 20 L56 20"/>
+    <path d="M1176 36 L1176 20 L1144 20"/>
+    <path d="M24 504 L24 520 L56 520"/>
+    <path d="M1176 504 L1176 520 L1144 520"/>
+  </g>
+
+  <!-- title -->
+  <text x="40" y="44" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#7A7A7A" letter-spacing="2.4">topology · lan (opt-in)</text>
+
+  <!-- LEFT outer container: your machine -->
+  <rect x="40" y="80" width="700" height="380" fill="none" stroke="#8A8784" stroke-width="1.5" stroke-dasharray="6 6" rx="4"/>
+  <text x="60" y="108" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" fill="#E8E6E1" letter-spacing="1.4">your machine</text>
+
+  <!-- Claude Code -->
+  <g>
+    <rect x="80" y="140" width="280" height="80" fill="#13110F" stroke="#E8E6E1" stroke-width="2" rx="3"/>
+    <text x="220" y="178" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="14" font-weight="700" fill="#E8E6E1">Claude Code</text>
+    <text x="220" y="200" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#A6A39E">project: foo</text>
+
+    <line x1="220" y1="220" x2="220" y2="270" stroke="#6A6864" stroke-width="1.5" stroke-dasharray="3 4"/>
+    <rect x="178" y="234" width="84" height="18" fill="#0A0908"/>
+    <text x="220" y="247" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#9A9794" letter-spacing="0.6">stdio MCP</text>
+
+    <rect x="100" y="270" width="240" height="60" fill="#181613" stroke="#E8E6E1" stroke-width="1.5" rx="3"/>
+    <text x="220" y="294" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="700" fill="#E8E6E1">agentmesh</text>
+    <text x="220" y="316" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="10" fill="#E8C674">foo@main#a3f2</text>
+  </g>
+
+  <!-- Cursor -->
+  <g>
+    <rect x="420" y="140" width="280" height="80" fill="#13110F" stroke="#E8E6E1" stroke-width="2" rx="3"/>
+    <text x="560" y="178" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="14" font-weight="700" fill="#E8E6E1">Cursor</text>
+    <text x="560" y="200" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#A6A39E">project: bar</text>
+
+    <line x1="560" y1="220" x2="560" y2="270" stroke="#6A6864" stroke-width="1.5" stroke-dasharray="3 4"/>
+    <rect x="518" y="234" width="84" height="18" fill="#0A0908"/>
+    <text x="560" y="247" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#9A9794" letter-spacing="0.6">stdio MCP</text>
+
+    <rect x="440" y="270" width="240" height="60" fill="#181613" stroke="#E8E6E1" stroke-width="1.5" rx="3"/>
+    <text x="560" y="294" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="700" fill="#E8E6E1">agentmesh</text>
+    <text x="560" y="316" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="10" fill="#E8C674">bar@dev#7c1e</text>
+  </g>
+
+  <!-- lo0 link between same-machine agentmesh boxes -->
+  <line x1="340" y1="300" x2="440" y2="300" stroke="#E8C674" stroke-width="1.8"/>
+  <rect x="350" y="285" width="80" height="30" fill="#0A0908" stroke="#E8C674" stroke-width="1" rx="2"/>
+  <text x="390" y="298" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#E8C674">mTLS</text>
+  <text x="390" y="310" text-anchor="middle" font-family="ui-monospace,monospace" font-size="9" fill="#A6A39E">on lo0</text>
+
+  <!-- caption inside your-machine box -->
+  <text x="390" y="420" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#7A7A7A" letter-spacing="1.2">loopback by default</text>
+
+  <!-- RIGHT outer container: teammate's machine -->
+  <rect x="820" y="80" width="340" height="380" fill="none" stroke="#8A8784" stroke-width="1.5" stroke-dasharray="6 6" rx="4"/>
+  <text x="840" y="108" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" fill="#E8E6E1" letter-spacing="1.4">teammate's machine</text>
+
+  <!-- Claude Code on teammate -->
+  <g>
+    <rect x="860" y="140" width="260" height="80" fill="#13110F" stroke="#E8E6E1" stroke-width="2" rx="3"/>
+    <text x="990" y="178" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="14" font-weight="700" fill="#E8E6E1">Claude Code</text>
+    <text x="990" y="200" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#A6A39E">project: webapp</text>
+
+    <line x1="990" y1="220" x2="990" y2="270" stroke="#6A6864" stroke-width="1.5" stroke-dasharray="3 4"/>
+    <rect x="948" y="234" width="84" height="18" fill="#0A0908"/>
+    <text x="990" y="247" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#9A9794" letter-spacing="0.6">stdio MCP</text>
+
+    <rect x="880" y="270" width="220" height="60" fill="#181613" stroke="#E8E6E1" stroke-width="1.5" rx="3"/>
+    <text x="990" y="294" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12" font-weight="700" fill="#E8E6E1">agentmesh</text>
+    <text x="990" y="316" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="10" fill="#E8C674">webapp@feat#5d12</text>
+  </g>
+
+  <!-- LAN link between the two big boxes -->
+  <line x1="740" y1="300" x2="820" y2="300" stroke="#E8C674" stroke-width="2"/>
+  <!-- small wavy/dots on the wire to suggest LAN -->
+  <g fill="#E8C674">
+    <circle cx="760" cy="300" r="2"/>
+    <circle cx="780" cy="300" r="2"/>
+    <circle cx="800" cy="300" r="2"/>
+  </g>
+  <rect x="700" y="338" width="160" height="48" fill="#0A0908" stroke="#E8C674" stroke-width="1" rx="2"/>
+  <!-- lock glyph -->
+  <g transform="translate(712, 348)">
+    <rect x="0" y="4" width="12" height="9" fill="#0A0908" stroke="#E8C674" stroke-width="1.2" rx="1"/>
+    <path d="M2 4 v-2 a4 4 0 0 1 8 0 v2" fill="none" stroke="#E8C674" stroke-width="1.2"/>
+  </g>
+  <text x="790" y="358" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#E8C674">mDNS + mTLS</text>
+  <text x="790" y="374" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#A6A39E">over Wi-Fi / LAN</text>
+
+  <!-- subtle bottom annotation -->
+  <text x="600" y="500" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#7A7A7A" letter-spacing="1.4">extends scope when mesh_open_lan is called</text>
+</svg>

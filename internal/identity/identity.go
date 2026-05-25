@@ -1,5 +1,18 @@
-// Package identity persists an Ed25519 keypair + display name for this node.
-// Stored at $AGENTMESH_HOME or ~/.agentmesh/identity.json.
+// Package identity holds the per-process Ed25519 keypair this agentmesh
+// instance uses for mTLS and for its mesh peer_id.
+//
+// Identity is ephemeral by design: a fresh keypair is generated at every
+// `agentmesh serve` startup and exists only in memory. There is no on-disk
+// persistence and no shared identity between sessions on the same machine.
+// This is the property that makes multiple harness sessions on one machine
+// mutually visible — each session has a distinct peer_id, so the registry's
+// self-filter doesn't hide them from each other.
+//
+// The tradeoff: peer_id changes on every restart. `allow_peers` lists in
+// mesh_share are session-scoped — if either side restarts, re-share. That's
+// the right shape for chat-style use; if anyone needs persistent identities
+// (long-lived allow lists, "remember this peer across days"), that's a v0.5+
+// design discussion.
 package identity
 
 import (
@@ -9,30 +22,47 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
 type Identity struct {
-	Name       string             `json:"name"`
-	Seed       string             `json:"seed_hex"`
-	PublicKey  ed25519.PublicKey  `json:"-"`
-	PrivateKey ed25519.PrivateKey `json:"-"`
+	PublicKey  ed25519.PublicKey
+	PrivateKey ed25519.PrivateKey
 }
 
-func (i *Identity) PeerID() string  { return hex.EncodeToString(i.PublicKey) }
+// PeerID returns the hex-encoded public key — the stable identifier for this
+// process across mDNS announcements, mTLS handshakes, and message envelopes.
+func (i *Identity) PeerID() string { return hex.EncodeToString(i.PublicKey) }
+
+// ShortID returns the first 16 hex chars of PeerID, suitable for display.
 func (i *Identity) ShortID() string { return i.PeerID()[:16] }
 
+// Tag returns the first 4 hex chars of PeerID, suitable for disambiguating
+// same-project sessions in the default display name.
+func (i *Identity) Tag() string { return i.PeerID()[:4] }
+
+// Ephemeral generates a fresh Ed25519 keypair held only in memory.
+func Ephemeral() (*Identity, error) {
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return nil, fmt.Errorf("generate seed: %w", err)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	return &Identity{
+		PrivateKey: priv,
+		PublicKey:  priv.Public().(ed25519.PublicKey),
+	}, nil
+}
+
 // TLSCertificate builds a self-signed X.509 cert backed by the Ed25519 keypair.
-// The cert's CommonName is the hex peer_id, and its Subject Public Key is the
-// Ed25519 public key — so peers can verify it just by knowing the peer_id we
-// advertised over mDNS. Same cert is used for both server and client auth (mTLS).
+// The cert's CommonName is the hex peer_id; its Subject Public Key is the
+// Ed25519 public key. Peers can verify it by knowing the peer_id we advertised
+// over mDNS. Same cert is used for both server and client auth (mTLS).
 func (i *Identity) TLSCertificate() (tls.Certificate, error) {
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -45,7 +75,7 @@ func (i *Identity) TLSCertificate() (tls.Certificate, error) {
 			x509.ExtKeyUsageClientAuth,
 		},
 		BasicConstraintsValid: true,
-		IsCA:                  true, // self-signed, so the cert is its own CA
+		IsCA:                  true, // self-signed cert is its own CA
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, i.PublicKey, i.PrivateKey)
 	if err != nil {
@@ -62,47 +92,49 @@ func (i *Identity) TLSCertificate() (tls.Certificate, error) {
 	}, nil
 }
 
-// DefaultDisplayName picks a meaningful name for this agentmesh instance
-// based on the current working directory and git branch — the place the
-// harness was launched from. Examples:
+// DefaultDisplayName composes the agent-facing display name for this node
+// from the current working directory and git branch, optionally tagged with
+// a 4-hex slice of the peer_id for same-project disambiguation. Examples:
 //
-//	~/projects/harnessP2P   on branch main         -> "harnessP2P@main"
-//	~/projects/harnessP2P   no git                 -> "harnessP2P"
-//	/                       (root, weird)          -> hostname or "anonymous"
-//
-// Falls back to the machine hostname if CWD can't be read or yields nothing
-// useful. Used when the binary is invoked without an explicit --name flag.
-func DefaultDisplayName() string {
-	host, _ := os.Hostname()
+//	~/projects/harnessP2P  on branch main, tag "a3f2"  -> "harnessP2P@main#a3f2"
+//	~/projects/foo         no git,         tag "7c1e"  -> "foo#7c1e"
+//	/                      weird,          tag "0000"  -> "<host>#0000"
+func DefaultDisplayName(tag string) string {
+	base := nameBase()
+	if tag != "" {
+		return base + "#" + tag
+	}
+	return base
+}
 
+func nameBase() string {
 	wd, err := os.Getwd()
 	if err != nil || wd == "" {
-		return fallbackName(host)
+		return fallbackHost()
 	}
 	base := filepath.Base(wd)
 	if base == "/" || base == "." || base == "" {
-		return fallbackName(host)
+		return fallbackHost()
 	}
-
 	if branch := gitBranchAt(wd); branch != "" {
 		return base + "@" + branch
 	}
 	return base
 }
 
-func fallbackName(host string) string {
-	if host != "" {
-		// Strip the trailing ".local" mDNS hosts often carry on macOS.
-		return strings.TrimSuffix(host, ".local")
+func fallbackHost() string {
+	h, _ := os.Hostname()
+	if h == "" {
+		return "anonymous"
 	}
-	return "anonymous"
+	return strings.TrimSuffix(h, ".local")
 }
 
 // gitBranchAt walks up from dir looking for a .git directory and reads HEAD
-// without shelling out to git (so we don't depend on git being installed).
-// Returns the branch name, a short detached HEAD hash, or "".
+// directly (no shelling out to git). Returns the branch name, a short detached
+// HEAD hash, or "".
 func gitBranchAt(dir string) string {
-	for i := 0; i < 20; i++ { // bounded walk; abandon if we get nowhere
+	for i := 0; i < 20; i++ {
 		head := filepath.Join(dir, ".git", "HEAD")
 		if data, err := os.ReadFile(head); err == nil {
 			s := strings.TrimSpace(string(data))
@@ -121,67 +153,4 @@ func gitBranchAt(dir string) string {
 		dir = parent
 	}
 	return ""
-}
-
-func Home() (string, error) {
-	if h := os.Getenv("AGENTMESH_HOME"); h != "" {
-		return h, nil
-	}
-	u, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(u.HomeDir, ".agentmesh"), nil
-}
-
-// LoadOrCreate returns the persisted identity, creating one with `defaultName`
-// if no file exists yet. defaultName may be empty (hostname is used).
-func LoadOrCreate(defaultName string) (*Identity, error) {
-	home, err := Home()
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(home, "identity.json")
-
-	if data, err := os.ReadFile(path); err == nil {
-		var id Identity
-		if err := json.Unmarshal(data, &id); err != nil {
-			return nil, fmt.Errorf("parse identity: %w", err)
-		}
-		seed, err := hex.DecodeString(id.Seed)
-		if err != nil || len(seed) != ed25519.SeedSize {
-			return nil, fmt.Errorf("bad seed in identity.json")
-		}
-		id.PrivateKey = ed25519.NewKeyFromSeed(seed)
-		id.PublicKey = id.PrivateKey.Public().(ed25519.PublicKey)
-		return &id, nil
-	}
-
-	seed := make([]byte, ed25519.SeedSize)
-	if _, err := rand.Read(seed); err != nil {
-		return nil, err
-	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	name := defaultName
-	if name == "" {
-		if h, err := os.Hostname(); err == nil {
-			name = h
-		} else {
-			name = "anonymous"
-		}
-	}
-	id := &Identity{
-		Name:       name,
-		Seed:       hex.EncodeToString(seed),
-		PrivateKey: priv,
-		PublicKey:  priv.Public().(ed25519.PublicKey),
-	}
-	data, _ := json.MarshalIndent(id, "", "  ")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return nil, err
-	}
-	return id, nil
 }

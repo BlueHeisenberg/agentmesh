@@ -65,6 +65,7 @@ $verNoV = $version -replace '^v',''
 # ---- known harness config paths ------------------------------------------
 
 $claudeCfg      = if ($env:CLAUDE_CONFIG)      { $env:CLAUDE_CONFIG }      else { Join-Path $env:USERPROFILE '.claude.json' }
+$claudeHooks    = if ($env:CLAUDE_HOOKS)       { $env:CLAUDE_HOOKS }       else { Join-Path $env:USERPROFILE '.claude\settings.json' }
 $cursorCfg      = if ($env:CURSOR_CONFIG)      { $env:CURSOR_CONFIG }      else { Join-Path $env:USERPROFILE '.cursor\mcp.json' }
 $codexCfg       = if ($env:CODEX_CONFIG)       { $env:CODEX_CONFIG }       else { Join-Path $env:USERPROFILE '.codex\config.toml' }
 $antigravityCfg = if ($env:ANTIGRAVITY_CONFIG) { $env:ANTIGRAVITY_CONFIG } else { Join-Path $env:USERPROFILE '.gemini\antigravity\mcp_config.json' }
@@ -310,6 +311,67 @@ function Register-McpJson {
   else          { OK "${Kind}: created $ConfigPath with agentmesh entry" }
 }
 
+function Register-ClaudeHook {
+  param([string]$HooksPath, [string]$BinPath)
+  if ($env:SKIP_HOOK) {
+    Step "claude hook: skipped (`$env:SKIP_HOOK set)"
+    return
+  }
+  $cmdString = "$BinPath hook prompt-inject"
+  $dir = Split-Path -Parent $HooksPath
+  if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+  $existed = Test-Path $HooksPath
+  $data = $null
+  if ($existed) {
+    try {
+      $raw = Get-Content -Raw -Path $HooksPath -Encoding UTF8
+      if ($raw -and $raw.Trim()) { $data = $raw | ConvertFrom-Json }
+    } catch {
+      Warn "claude hook: $HooksPath isn't valid JSON - not touching it"; return
+    }
+  }
+  if ($null -eq $data) { $data = New-Object PSObject }
+
+  if (-not $data.PSObject.Properties.Match('hooks').Count) {
+    $data | Add-Member -NotePropertyName 'hooks' -NotePropertyValue (New-Object PSObject)
+  }
+  $hooksObj = $data.hooks
+  if (-not $hooksObj.PSObject.Properties.Match('UserPromptSubmit').Count) {
+    $hooksObj | Add-Member -NotePropertyName 'UserPromptSubmit' -NotePropertyValue (New-Object 'System.Collections.ArrayList')
+  }
+  # ConvertFrom-Json returns arrays as object[]; coerce to a mutable ArrayList.
+  $ups = New-Object 'System.Collections.ArrayList'
+  foreach ($e in $hooksObj.UserPromptSubmit) { [void]$ups.Add($e) }
+
+  # Idempotency: match the agentmesh binary anywhere + the trailing subcommand
+  foreach ($entry in $ups) {
+    if ($entry -is [PSObject] -and $entry.PSObject.Properties.Match('hooks').Count -gt 0) {
+      foreach ($inner in $entry.hooks) {
+        if ($inner -is [PSObject] -and `
+            $inner.command -like "*agentmesh*" -and `
+            $inner.command -like "* hook prompt-inject") {
+          OK "claude hook: already registered"; return
+        }
+      }
+    }
+  }
+
+  $newEntry = [PSCustomObject]@{
+    matcher = '*'
+    hooks   = @(
+      [PSCustomObject]@{ type = 'command'; command = $cmdString }
+    )
+  }
+  [void]$ups.Add($newEntry)
+  $hooksObj.UserPromptSubmit = $ups.ToArray()
+
+  if ($existed) { Copy-Item $HooksPath "$HooksPath.bak" -Force }
+  ($data | ConvertTo-Json -Depth 20) | Set-Content -Path $HooksPath -Encoding UTF8
+  if ($existed) { OK "claude hook: registered in $HooksPath (backup at $HooksPath.bak)" }
+  else          { OK "claude hook: created $HooksPath with UserPromptSubmit entry" }
+}
+
 function Register-CodexToml {
   param([string]$ConfigPath, [string]$BinPath, [string]$NameOverride)
 
@@ -342,7 +404,10 @@ $nameOver = $env:NAME
 Write-Host ""
 foreach ($h in ($harness -split '\s+' | Where-Object { $_ })) {
   switch ($h) {
-    'claude'      { Register-McpJson 'claude'      $claudeCfg      $binPath $nameOver }
+    'claude'      {
+      Register-McpJson 'claude' $claudeCfg $binPath $nameOver
+      Register-ClaudeHook $claudeHooks $binPath
+    }
     'cursor'      { Register-McpJson 'cursor'      $cursorCfg      $binPath $nameOver }
     'codex'       { Register-CodexToml             $codexCfg       $binPath $nameOver }
     'antigravity' { Register-McpJson 'antigravity' $antigravityCfg $binPath $nameOver }

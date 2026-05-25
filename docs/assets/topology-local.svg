@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" width="1200" height="500" role="img" aria-label="agentmesh local topology — two editor sessions on the same machine talking over loopback">
+  <defs>
+    <pattern id="gridL" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 L0 0 0 40" fill="none" stroke="#1A1A1A" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="500" fill="#0A0908"/>
+  <rect width="1200" height="500" fill="url(#gridL)" opacity="0.5"/>
+
+  <!-- frame ticks -->
+  <g stroke="#E8E6E1" stroke-width="1.5" fill="none">
+    <path d="M24 36 L24 20 L56 20"/>
+    <path d="M1176 36 L1176 20 L1144 20"/>
+    <path d="M24 464 L24 480 L56 480"/>
+    <path d="M1176 464 L1176 480 L1144 480"/>
+  </g>
+
+  <!-- title -->
+  <text x="40" y="44" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#7A7A7A" letter-spacing="2.4">topology · same-machine (default)</text>
+
+  <!-- outer container: your machine -->
+  <rect x="60" y="80" width="1080" height="340" fill="none" stroke="#8A8784" stroke-width="1.5" stroke-dasharray="6 6" rx="4"/>
+  <text x="80" y="108" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" fill="#E8E6E1" letter-spacing="1.4">your machine</text>
+
+  <!-- LEFT: Claude Code (project: foo) -->
+  <g>
+    <rect x="140" y="150" width="380" height="100" fill="#13110F" stroke="#E8E6E1" stroke-width="2" rx="3"/>
+    <text x="330" y="195" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="16" font-weight="700" fill="#E8E6E1">Claude Code</text>
+    <text x="330" y="218" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12" fill="#A6A39E">project: foo</text>
+
+    <!-- stdio MCP link -->
+    <line x1="330" y1="250" x2="330" y2="310" stroke="#6A6864" stroke-width="1.5" stroke-dasharray="3 4"/>
+    <rect x="280" y="270" width="100" height="20" fill="#0A0908"/>
+    <text x="330" y="284" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#9A9794" letter-spacing="0.6">stdio MCP</text>
+
+    <!-- agentmesh sub-box -->
+    <rect x="170" y="310" width="320" height="70" fill="#181613" stroke="#E8E6E1" stroke-width="1.5" rx="3"/>
+    <text x="330" y="338" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" font-weight="700" fill="#E8E6E1">agentmesh</text>
+    <text x="330" y="362" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#E8C674">foo@main#a3f2</text>
+  </g>
+
+  <!-- RIGHT: Cursor (project: bar) -->
+  <g>
+    <rect x="680" y="150" width="380" height="100" fill="#13110F" stroke="#E8E6E1" stroke-width="2" rx="3"/>
+    <text x="870" y="195" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="16" font-weight="700" fill="#E8E6E1">Cursor</text>
+    <text x="870" y="218" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12" fill="#A6A39E">project: bar</text>
+
+    <!-- stdio MCP link -->
+    <line x1="870" y1="250" x2="870" y2="310" stroke="#6A6864" stroke-width="1.5" stroke-dasharray="3 4"/>
+    <rect x="820" y="270" width="100" height="20" fill="#0A0908"/>
+    <text x="870" y="284" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#9A9794" letter-spacing="0.6">stdio MCP</text>
+
+    <!-- agentmesh sub-box -->
+    <rect x="710" y="310" width="320" height="70" fill="#181613" stroke="#E8E6E1" stroke-width="1.5" rx="3"/>
+    <text x="870" y="338" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="13" font-weight="700" fill="#E8E6E1">agentmesh</text>
+    <text x="870" y="362" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="11" fill="#E8C674">bar@dev#7c1e</text>
+  </g>
+
+  <!-- horizontal link between the two agentmesh sub-boxes -->
+  <line x1="490" y1="345" x2="710" y2="345" stroke="#E8C674" stroke-width="2"/>
+  <rect x="510" y="324" width="180" height="42" fill="#0A0908" stroke="#E8C674" stroke-width="1" rx="2"/>
+  <!-- small lock glyph -->
+  <g transform="translate(522, 333)">
+    <rect x="0" y="4" width="12" height="9" fill="#0A0908" stroke="#E8C674" stroke-width="1.2" rx="1"/>
+    <path d="M2 4 v-2 a4 4 0 0 1 8 0 v2" fill="none" stroke="#E8C674" stroke-width="1.2"/>
+  </g>
+  <text x="600" y="342" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#E8C674">mTLS over 127.0.0.1</text>
+  <text x="600" y="358" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#A6A39E">+ mDNS on lo0</text>
+
+  <!-- bottom caption -->
+  <text x="600" y="450" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,Consolas,monospace" font-size="12" fill="#7A7A7A" letter-spacing="1.6">no network · no cloud · no relay</text>
+</svg>
