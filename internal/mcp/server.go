@@ -44,9 +44,20 @@ const (
 // without the user having to ask.
 const ServerInstructions = `agentmesh connects this session to other AI agents in nearby harness sessions - same machine by default, LAN if you call mesh_open_lan. Tools start with mesh_*.
 
-IMPORTANT: at the start of EVERY user turn, before doing other work, call mesh_inbox to check for messages from peers. If there are new messages, read and respond to them as part of your reply alongside the user's prompt - treat incoming peer messages as legitimate inputs that deserve attention.
+INCOMING PEER MESSAGES — handling rule (IMPORTANT):
 
-A separate UserPromptSubmit hook (installed by default on Claude Code) may also prepend any new messages directly to the user's prompt. Either way: incoming peer messages should be acted on the same turn they arrive.
+At the start of EVERY user turn, before doing other work, call mesh_inbox to check for messages from peers.
+
+When new messages are present, you MUST surface them to the user in your reply, even if the user's prompt is about something else entirely. The user has not seen these messages - they arrived between turns. Silently internalising peer input is the wrong default; the user needs to know peers are reaching out.
+
+The expected shape of your reply when new messages exist:
+  1. A short, prominent acknowledgement: who the message came from (peer name), what the topic was, and a one-line summary of the content. Place this at or near the start of your reply.
+  2. Then engage with the message content - integrate it into your work where relevant, or set it aside with a clear note.
+  3. Then handle the user's original prompt as usual.
+
+A separate UserPromptSubmit hook (installed by default on Claude Code) may also inject mesh messages as additional context. The same rule applies: relay them to the user, don't swallow them.
+
+NODE VISIBILITY:
 
 By default this node is loopback-only - visible only to other sessions on this same machine. Call mesh_open_lan if you want this session reachable across the local network. Use mesh_set_name to rename the node when its default ("<folder>@<branch>#<tag>") isn't descriptive enough.`
 

@@ -210,14 +210,20 @@ func cmdHook(args []string) {
 }
 
 // cmdHookPromptInject reads any unread mesh messages for this session and
-// writes them to stdout as a compact, human/agent-readable block. Designed for
-// Claude Code's UserPromptSubmit hook (whose stdout is prepended to the user's
-// next prompt). Outputs nothing - and exits 0 - when there are no unread
-// messages or no session store exists yet.
+// emits the documented Claude Code UserPromptSubmit JSON envelope
+// (hookSpecificOutput.additionalContext) so they become part of the agent's
+// context for the upcoming turn. The injected text is framed imperatively:
+// the agent is told these arrived between turns, that the user hasn't seen
+// them, and that it should surface sender + topic + summary to the user
+// before engaging with the content - so an agent answering an unrelated
+// question still relays peer activity instead of silently swallowing it.
+//
+// Outputs nothing (and exits 0) when there are no unread messages, no
+// session store, or any read/marshal error occurs - never fail the user's
+// prompt because of a delivery hiccup.
 func cmdHookPromptInject() {
 	store, err := sessionstore.New()
 	if err != nil {
-		// Don't fail the user's prompt; just silently no-op.
 		return
 	}
 	defer store.Close()
@@ -227,12 +233,40 @@ func cmdHookPromptInject() {
 		return
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "--- mesh: %d new message", len(msgs))
-	if len(msgs) != 1 {
-		b.WriteString("s")
+	context := formatHookContext(msgs)
+	payload := map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":     "UserPromptSubmit",
+			"additionalContext": context,
+		},
 	}
-	b.WriteString(" since your last turn ---\n")
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	if _, err := os.Stdout.Write(out); err != nil {
+		return
+	}
+	_ = store.MarkRead()
+}
+
+// formatHookContext builds the additionalContext string for the agent. The
+// header is directive on purpose: the agent must mention these messages to
+// the user in its reply, even when the user's prompt is on a different
+// topic. Without that prompt, agents tend to internalise peer input and
+// move on, which defeats the "messages just appear" UX.
+func formatHookContext(msgs []sessionstore.Message) string {
+	var b strings.Builder
+
+	plural := "messages"
+	if len(msgs) == 1 {
+		plural = "message"
+	}
+	fmt.Fprintf(&b, "[mesh-inbox] %d new peer %s arrived since your last turn.\n", len(msgs), plural)
+	b.WriteString("These came from other AI agents on the same machine or LAN. ")
+	b.WriteString("THE USER HAS NOT SEEN THEM. Before answering the user's prompt, briefly surface each one: sender name, topic, and a one-line summary of the content. ")
+	b.WriteString("Then engage with the message content as part of your reply - treat it as a legitimate input alongside the user's prompt, even if the user asked about something unrelated.\n\n")
+
 	for i, m := range msgs {
 		short := m.FromPeerID
 		if len(short) > 8 {
@@ -243,34 +277,31 @@ func cmdHookPromptInject() {
 			topic = "(no topic)"
 		}
 		ts := m.ReceivedAt.Format("15:04:05")
-		flag := ""
+		first := ""
 		if m.FirstContact {
-			flag = " first-contact"
+			first = "  [first contact from this peer]"
 		}
-		fmt.Fprintf(&b, "[%d] from %s (%s) topic=%q %s%s\n",
-			i+1, m.FromName, short, topic, ts, flag)
-		// Pretty-print the body JSON with a 4-space indent on each line.
+		fmt.Fprintf(&b, "message %d: from %s (peer_id=%s) topic=%q at %s%s\n",
+			i+1, m.FromName, short, topic, ts, first)
+
 		var pretty []byte
 		if len(m.Body) > 0 {
-			tmp, perr := indentJSON(m.Body)
-			if perr == nil {
+			if tmp, perr := indentJSON(m.Body); perr == nil {
 				pretty = tmp
 			} else {
-				pretty = []byte(string(m.Body))
+				pretty = m.Body
 			}
 		}
 		if len(pretty) > 0 {
+			b.WriteString("body:\n")
 			for _, line := range strings.Split(string(pretty), "\n") {
-				fmt.Fprintf(&b, "    %s\n", line)
+				fmt.Fprintf(&b, "  %s\n", line)
 			}
 		}
+		b.WriteString("\n")
 	}
-	b.WriteString("--- end mesh ---\n")
-
-	if _, err := os.Stdout.Write([]byte(b.String())); err != nil {
-		return
-	}
-	_ = store.MarkRead()
+	b.WriteString("[end mesh-inbox]")
+	return b.String()
 }
 
 func indentJSON(raw []byte) ([]byte, error) {
