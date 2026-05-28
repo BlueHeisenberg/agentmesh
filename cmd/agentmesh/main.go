@@ -50,6 +50,8 @@ func main() {
 		cmdHook(os.Args[2:])
 	case "version":
 		fmt.Println("agentmesh " + transport.Version)
+	case "whoami":
+		cmdWhoami()
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -57,6 +59,24 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+// cmdWhoami prints a short post-install self-check: version, identity model
+// (ephemeral in v0.4+), and the default display name we'd derive in the
+// current working directory. Used by the install scripts to confirm a
+// fresh binary works.
+func cmdWhoami() {
+	// Reuse a one-off ephemeral identity just to show the tag form.
+	id, err := identity.Ephemeral()
+	tag := ""
+	if err == nil {
+		tag = id.Tag()
+	}
+	defaultName := identity.DefaultDisplayName(tag)
+	fmt.Println("agentmesh " + transport.Version)
+	fmt.Println("identity: ephemeral (fresh Ed25519 keypair per `agentmesh serve`)")
+	fmt.Println("default name (this dir): " + defaultName)
+	fmt.Println("default visibility: loopback - agent calls mesh_open_lan to advertise on the LAN")
 }
 
 func usage() {
@@ -71,6 +91,8 @@ Subcommands:
                                 session to stdout. Run from a harness's
                                 UserPromptSubmit hook so peers' messages
                                 appear in the user's next prompt.
+  whoami                        Print a short self-check (version, identity
+                                model, default name in current dir).
   version                       Print version and exit.
 
 Identity is ephemeral - a fresh Ed25519 keypair per process. No on-disk

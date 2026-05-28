@@ -744,10 +744,14 @@ agentmesh: discovered peer <span class="you">Cursor</span> myproj@dev#7c1e at 12
       if (!target) return;
       // strip the inline <span> markup, keep the plain text
       var text = target.innerText.replace(/ /g, ' ');
-      // also strip leading "$ " prompt markers so the user gets runnable lines
+      // strip leading prompt markers so the copied text is runnable. covers
+      // POSIX sh ("$ "), bash ("# "), and PowerShell ("PS> " as we render it
+      // in the page, plus the full "PS C:\path>" form some terminals show
+      // when users copy from their own session — be permissive in what we
+      // strip so paste-then-run always works).
       text = text.split('\n').map(function (l) {
-        return l.replace(/^\$\s?/, '');
-      }).join('\n');
+        return l.replace(/^(?:\$|#|PS[^>]*>)\s?/, '');
+      }).join('\n').replace(/^\s+|\s+$/g, '') + '\n';
       navigator.clipboard.writeText(text).then(function () {
         btn.textContent = '✓ copied';
         btn.classList.add('copied');

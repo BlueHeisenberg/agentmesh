@@ -174,7 +174,17 @@ finally {
 }
 
 Subtle ""
-& $target whoami 2>$null | ForEach-Object { Subtle $_ }
+# Best-effort self-check. Older binaries (< v0.4.3) don't have `whoami` and
+# would exit non-zero, which combined with $ErrorActionPreference='Stop'
+# halts the whole install. Catch and ignore.
+try {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & $target whoami 2>$null | ForEach-Object { Subtle $_ }
+  $ErrorActionPreference = $prev
+} catch {
+  # silently skip the self-check
+}
 Subtle ""
 
 # ---- add to user PATH -----------------------------------------------------
