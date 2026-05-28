@@ -294,7 +294,15 @@ function Register-ClaudeHook {
     Step "claude hook: skipped (`$env:SKIP_HOOK set)"
     return
   }
-  $cmdString = "$BinPath hook prompt-inject"
+  # Forward-slash the binary path before embedding in the hook command. The
+  # hook command is a SHELL string (Claude Code dispatches it through a
+  # shell, which on Windows tends to be Git Bash's /usr/bin/bash). Bash
+  # treats backslashes in unquoted words as escape characters and silently
+  # eats them, mangling "C:\Users\alice\..." into "C:UsersaliceAppData...".
+  # Forward slashes are not meta in bash and Windows CreateProcess accepts
+  # them as path separators, so this works in both worlds.
+  $cmdPath = $BinPath -replace '\\','/'
+  $cmdString = "$cmdPath hook prompt-inject"
   $dir = Split-Path -Parent $HooksPath
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
@@ -321,32 +329,48 @@ function Register-ClaudeHook {
   $ups = New-Object 'System.Collections.ArrayList'
   foreach ($e in $hooksObj.UserPromptSubmit) { [void]$ups.Add($e) }
 
-  # Idempotency: match the agentmesh binary anywhere + the trailing subcommand
+  # Idempotency + auto-repair: match the agentmesh binary + hook subcommand.
+  # If we find an existing entry, repair its command if it contains
+  # backslashes (which would silently fail under bash on Windows). Otherwise
+  # leave it alone.
+  $repaired = $false
   foreach ($entry in $ups) {
     if ($entry -is [PSObject] -and $entry.PSObject.Properties.Match('hooks').Count -gt 0) {
       foreach ($inner in $entry.hooks) {
         if ($inner -is [PSObject] -and `
             $inner.command -like "*agentmesh*" -and `
             $inner.command -like "* hook prompt-inject") {
-          OK "claude hook: already registered"; return
+          if ($inner.command -match '\\') {
+            $inner.command = $cmdString
+            $repaired = $true
+          } else {
+            OK "claude hook: already registered"; return
+          }
         }
       }
     }
   }
 
-  $newEntry = [PSCustomObject]@{
-    matcher = '*'
-    hooks   = @(
-      [PSCustomObject]@{ type = 'command'; command = $cmdString }
-    )
+  if (-not $repaired) {
+    $newEntry = [PSCustomObject]@{
+      matcher = '*'
+      hooks   = @(
+        [PSCustomObject]@{ type = 'command'; command = $cmdString }
+      )
+    }
+    [void]$ups.Add($newEntry)
   }
-  [void]$ups.Add($newEntry)
   $hooksObj.UserPromptSubmit = $ups.ToArray()
 
   if ($existed) { Copy-Item $HooksPath "$HooksPath.bak" -Force }
   ($data | ConvertTo-Json -Depth 20) | Set-Content -Path $HooksPath -Encoding UTF8
-  if ($existed) { OK "claude hook: registered in $HooksPath (backup at $HooksPath.bak)" }
-  else          { OK "claude hook: created $HooksPath with UserPromptSubmit entry" }
+  if ($repaired) {
+    OK "claude hook: repaired backslash path in $HooksPath (backup at $HooksPath.bak)"
+  } elseif ($existed) {
+    OK "claude hook: registered in $HooksPath (backup at $HooksPath.bak)"
+  } else {
+    OK "claude hook: created $HooksPath with UserPromptSubmit entry"
+  }
 }
 
 # Fast path: already configured, no $env:RECONFIGURE -> just exit.
