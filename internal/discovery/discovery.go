@@ -264,28 +264,61 @@ func entryToPeer(e *zeroconf.ServiceEntry) Peer {
 // pickAddr scores candidate IPv4s and returns the best routable string form.
 // Order of preference (best first):
 //
-//  1. 127.0.0.1 if we've advertised lo0 ourselves (same-machine pair) — loopback
-//     loop is what same-machine sessions communicate through.
+//  1. 127.0.0.1 ONLY when the peer is verifiably on this machine - detected
+//     by one of their advertised A records matching one of our own non-
+//     loopback IPv4s. Without this guard, the v0.4+ habit of advertising
+//     127.0.0.1 alongside the LAN IP would cause us to attribute every
+//     remote peer to our own loopback (a real bug found in the field).
 //  2. Same /24 as one of our LAN interfaces.
 //  3. Same /16 as one of our LAN interfaces.
-//  4. Any usable IPv4 (not link-local / unspecified).
+//  4. Any usable IPv4 (not link-local / unspecified / loopback).
 //  5. IPv6 (link-local form) as last resort.
-//
-// The loopback preference is what makes same-machine peers connect via
-// 127.0.0.1 even when they also advertise LAN IPs.
 func pickAddr(v4 []net.IP, v6 []net.IP) string {
-	// Step 1: loopback wins if it's in the list.
+	mine := localLANIPv4s()
+
+	// Same-machine detection: two signals, either is sufficient.
+	//   (a) The peer's advertise includes one of OUR LAN IPs - they're us
+	//       running on a different process and are advertising in LAN mode.
+	//   (b) The peer advertises ONLY loopback addresses - they can only be
+	//       same-machine; a truly-remote peer advertising loopback-only
+	//       would be unreachable to anyone, so it must be the
+	//       default-loopback v0.4+ "advertise 127.0.0.1 on lo0 only" case.
+	sameMachine := false
 	for _, c := range v4 {
-		if c.IsLoopback() {
-			return c.String()
+		for _, m := range mine {
+			if c4 := c.To4(); c4 != nil && c4.Equal(m) {
+				sameMachine = true
+				break
+			}
+		}
+		if sameMachine {
+			break
+		}
+	}
+	if !sameMachine && len(v4) > 0 {
+		allLoopback := true
+		for _, c := range v4 {
+			if !c.IsLoopback() {
+				allLoopback = false
+				break
+			}
+		}
+		if allLoopback {
+			sameMachine = true
+		}
+	}
+	if sameMachine {
+		for _, c := range v4 {
+			if c.IsLoopback() {
+				return c.String()
+			}
 		}
 	}
 
-	mine := localLANIPv4s()
 	usable := make([]net.IP, 0, len(v4))
 	for _, c := range v4 {
 		c4 := c.To4()
-		if c4 == nil || c4.IsLinkLocalUnicast() || c4.IsUnspecified() {
+		if c4 == nil || c4.IsLoopback() || c4.IsLinkLocalUnicast() || c4.IsUnspecified() {
 			continue
 		}
 		usable = append(usable, c4)
