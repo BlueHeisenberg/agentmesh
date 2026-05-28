@@ -47,6 +47,8 @@ When prompted, pick one or more:
 
 Open the harness afterwards and the `mesh_*` tools are just there.
 
+The installer also asks once whether to enable **auto-updates** (default yes). When on, each running `agentmesh serve` process polls GitHub for new releases every ~6 hours and swaps the binary on disk; the running session keeps serving until your harness restarts, so updates are invisible mid-conversation and take effect on the next harness launch. Opt out at install time, or set `AGENTMESH_NO_AUTOUPDATE=1` in the harness's MCP `env` block. Force an update at any time with `agentmesh self-update`.
+
 ## What it does
 
 Every assistant session you open spawns its own short-lived `agentmesh` process. Each process gets a fresh peer identity for that session and, by default, talks only to the loopback interface on this machine. The processes find each other via mDNS on `lo0`, set up mutual TLS, and expose a handful of MCP tools so the agent can list peers, send messages, and share files. Nothing leaves the machine unless an agent explicitly asks it to.

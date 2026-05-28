@@ -22,10 +22,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -36,7 +38,19 @@ import (
 	"github.com/BlueHeisenberg/agentmesh/internal/sessionstore"
 	"github.com/BlueHeisenberg/agentmesh/internal/shares"
 	"github.com/BlueHeisenberg/agentmesh/internal/transport"
+	"github.com/BlueHeisenberg/agentmesh/internal/update"
 )
+
+// autoUpdateInterval is how often each running `agentmesh serve` checks GitHub
+// for a newer release. 6h keeps the request rate gentle (max 4 calls/day per
+// running session) while making any new release land on the user's machine
+// within a typical workday.
+const autoUpdateInterval = 6 * time.Hour
+
+// selfUpdateRepo is the GitHub owner/repo we self-update from. Kept as a
+// package-level const so it lives next to the other release-y bits and
+// is easy to grep for.
+const selfUpdateRepo = "BlueHeisenberg/agentmesh"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -52,6 +66,8 @@ func main() {
 		fmt.Println("agentmesh " + transport.Version)
 	case "whoami":
 		cmdWhoami()
+	case "self-update":
+		cmdSelfUpdate(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -180,6 +196,19 @@ func cmdServe(args []string) {
 	}
 	if _, err := node.Start(target); err != nil {
 		die(fmt.Errorf("start node: %w", err))
+	}
+
+	// Background auto-update poll. Off only when the user explicitly opted
+	// out at install time (env injected into the harness mcp config). The
+	// loop checks GitHub once at startup (after a small jitter) and then
+	// every autoUpdateInterval. SelfReplace only swaps the on-disk binary;
+	// the running process keeps serving until the harness restarts it, so
+	// the update is invisible mid-session and safe to apply concurrently
+	// across multiple sessions on the same machine.
+	autoUpdateCtx, stopAutoUpdate := context.WithCancel(context.Background())
+	defer stopAutoUpdate()
+	if os.Getenv("AGENTMESH_NO_AUTOUPDATE") == "" {
+		go runAutoUpdateLoop(autoUpdateCtx)
 	}
 
 	// Graceful shutdown - stdio MCP will also exit when stdin closes, but
@@ -332,6 +361,96 @@ func indentJSON(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	return json.MarshalIndent(v, "", "  ")
+}
+
+// ----------------------------------------------------------------------------
+// self-update
+// ----------------------------------------------------------------------------
+
+// cmdSelfUpdate is a one-shot synchronous updater: ask GitHub for the
+// latest release, compare with transport.Version, and (if newer, or
+// --force) download + verify + replace the running binary in place.
+//
+// Exit codes:
+//
+//	0  updated, or already on the latest version
+//	1  failure (network, checksum, rename, etc.)
+//
+// Human summary is printed to stdout; phase progress lines come from the
+// update package on stderr.
+func cmdSelfUpdate(args []string) {
+	fs := flag.NewFlagSet("self-update", flag.ExitOnError)
+	force := fs.Bool("force", false, "always re-download and replace, even when already on the latest version")
+	_ = fs.Parse(args)
+
+	ctx := context.Background()
+
+	tag, err := update.LatestRelease(ctx, selfUpdateRepo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentmesh self-update: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !*force && !update.IsNewer(transport.Version, tag) {
+		fmt.Printf("already on the latest version (v%s)\n", transport.Version)
+		return
+	}
+
+	if err := update.SelfReplace(ctx, selfUpdateRepo, tag); err != nil {
+		fmt.Fprintf(os.Stderr, "agentmesh self-update: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("updated to %s (restart your harness to pick it up)\n", tag)
+}
+
+// runAutoUpdateLoop is the goroutine spawned by `serve` when auto-update is
+// enabled. It does an immediate jittered check at startup so a fresh install
+// can pick up a same-day release, then loops every autoUpdateInterval.
+//
+// Errors at any step are logged to stderr and otherwise ignored. The update
+// path is best-effort: a broken network, an unwritable install dir, a flaky
+// CDN should never block the user's session.
+func runAutoUpdateLoop(ctx context.Context) {
+	// Initial jitter so multiple sessions started in lockstep (e.g. a user
+	// reopening the same Claude Code window twice in quick succession) don't
+	// hammer GitHub or race each other on the same rename.
+	jitter := time.Duration(5+rand.Intn(26)) * time.Second // 5..30s
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(jitter):
+	}
+
+	runOnce := func() {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		tag, err := update.LatestRelease(ctx, selfUpdateRepo)
+		if err != nil {
+			// Quietly: failed checks shouldn't spam the MCP transcript.
+			return
+		}
+		if !update.IsNewer(transport.Version, tag) {
+			return
+		}
+		if err := update.SelfReplace(ctx, selfUpdateRepo, tag); err != nil {
+			fmt.Fprintf(os.Stderr, "agentmesh auto-update: %v\n", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"agentmesh auto-update: replaced binary with %s; restart the harness to load it\n", tag)
+	}
+
+	runOnce()
+	t := time.NewTicker(autoUpdateInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			runOnce()
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------

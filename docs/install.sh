@@ -28,6 +28,12 @@
 #                    override individual config paths.
 #   CLAUDE_HOOKS     override the Claude Code hooks settings path
 #                    (default: ~/.claude/settings.json).
+#   AUTOUPDATE       answer the "Enable agentmesh auto-updates?" prompt
+#                    non-interactively. yes/1/true (default if absent in a
+#                    non-tty session) leaves the in-binary auto-update on;
+#                    no/0/false adds AGENTMESH_NO_AUTOUPDATE=1 to each
+#                    harness's mcp env so the binary skips its periodic
+#                    GitHub release check.
 
 set -eu
 
@@ -575,6 +581,44 @@ if [ -z "$HARNESS" ]; then
   exit 0
 fi
 
+# ---- auto-update opt-in --------------------------------------------------
+# Default behaviour of the binary is to check GitHub every ~6h and replace
+# itself. We let the user opt out by setting AGENTMESH_NO_AUTOUPDATE=1 in
+# each harness's mcp env block. NO_AUTOUPDATE=1 below means "opt out".
+NO_AUTOUPDATE=0
+prompt_autoupdate() {
+  # Honour AUTOUPDATE env var, no prompt.
+  if [ -n "${AUTOUPDATE:-}" ]; then
+    case "$(echo "$AUTOUPDATE" | tr '[:upper:]' '[:lower:]')" in
+      y|yes|1|true|on)   NO_AUTOUPDATE=0; return ;;
+      n|no|0|false|off)  NO_AUTOUPDATE=1; return ;;
+      *) warn "AUTOUPDATE=${AUTOUPDATE} not understood - leaving auto-update enabled" ;;
+    esac
+    NO_AUTOUPDATE=0
+    return
+  fi
+
+  # Non-interactive: default to auto-update on (Y).
+  if ! exec 3</dev/tty 2>/dev/null; then
+    NO_AUTOUPDATE=0
+    return
+  fi
+  exec 3<&-
+
+  printf "\n"
+  printf "%sEnable agentmesh auto-updates?%s (binary checks GitHub for new releases\n" "$C_BOLD" "$C_OFF"
+  printf "every ~6 hours and replaces itself; restart your harness to pick up\n"
+  printf "the update) [Y/n]: "
+  ans=""
+  IFS= read -r ans </dev/tty || ans=""
+  case "$(echo "$ans" | tr '[:upper:]' '[:lower:]')" in
+    n|no|never|false|0) NO_AUTOUPDATE=1 ;;
+    *)                  NO_AUTOUPDATE=0 ;;
+  esac
+}
+
+prompt_autoupdate
+
 # ---- registration --------------------------------------------------------
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -593,9 +637,10 @@ fi
 
 register_one() {
   kind="$1"; cfg="$2"
-  result="$(python3 - "$kind" "$cfg" "$bin_path" "${NAME:-}" <<'PYEOF'
-import json, os, shutil, sys
-kind, cfg, bin_path, name = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+  result="$(python3 - "$kind" "$cfg" "$bin_path" "${NAME:-}" "${NO_AUTOUPDATE:-0}" <<'PYEOF'
+import json, os, re, shutil, sys
+kind, cfg, bin_path, name, no_au = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+no_au = no_au == "1"
 
 # Default args list. If NAME is provided, pin it; otherwise let the binary
 # auto-derive (CWD + git branch).
@@ -604,13 +649,21 @@ if name:
     args.append(f"--name={name}")
 
 if kind == "codex":
-    section = "\n[mcp_servers.agentmesh]\n"
-    section += f'command = "{bin_path}"\n'
+    # Codex is TOML. We append a new [mcp_servers.agentmesh] block when one
+    # isn't there. When the user opted out of auto-update we add an inline
+    # env table; otherwise we omit env entirely (auto-update is the in-binary
+    # default).
     if args[1:]:
         joined = ", ".join(f'"{a}"' for a in args)
-        section += f"args = [{joined}]\n"
+        args_line = f"args = [{joined}]\n"
     else:
-        section += 'args = ["serve"]\n'
+        args_line = 'args = ["serve"]\n'
+    section = "\n[mcp_servers.agentmesh]\n"
+    section += f'command = "{bin_path}"\n'
+    section += args_line
+    if no_au:
+        section += 'env = { AGENTMESH_NO_AUTOUPDATE = "1" }\n'
+
     if not os.path.exists(cfg):
         os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
         with open(cfg, "w") as f:
@@ -618,6 +671,36 @@ if kind == "codex":
         print("CREATED"); sys.exit(0)
     text = open(cfg).read()
     if "[mcp_servers.agentmesh]" in text:
+        # Section already exists. Merge env if opted out and key absent.
+        if no_au and "AGENTMESH_NO_AUTOUPDATE" not in text:
+            shutil.copyfile(cfg, cfg + ".bak")
+            # Find the agentmesh section.
+            m = re.search(r"(^\[mcp_servers\.agentmesh\][^\[]*)", text, re.MULTILINE)
+            if not m:
+                print("ALREADY"); sys.exit(0)
+            block = m.group(1)
+            env_match = re.search(r"^env\s*=\s*\{([^}]*)\}\s*$", block, re.MULTILINE)
+            if env_match:
+                # Merge into existing inline table.
+                inner = env_match.group(1).strip()
+                if inner:
+                    new_inner = inner.rstrip(", ") + ', AGENTMESH_NO_AUTOUPDATE = "1"'
+                else:
+                    new_inner = ' AGENTMESH_NO_AUTOUPDATE = "1" '
+                new_block = block[:env_match.start()] + f"env = {{{new_inner}}}\n" + block[env_match.end()+1:]
+            else:
+                # Append env line at end of block (preserve trailing newline).
+                stripped = block.rstrip("\n")
+                new_block = stripped + '\nenv = { AGENTMESH_NO_AUTOUPDATE = "1" }\n'
+                # If original block ended with extra blank lines, keep one.
+                if block.endswith("\n\n"):
+                    new_block += "\n"
+            new_text = text[:m.start(1)] + new_block + text[m.end(1):]
+            tmp = cfg + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(new_text)
+            os.replace(tmp, cfg)
+            print("OK"); sys.exit(0)
         print("ALREADY"); sys.exit(0)
     shutil.copyfile(cfg, cfg + ".bak")
     with open(cfg, "a") as f:
@@ -641,8 +724,20 @@ mcp = data.setdefault("mcpServers", {})
 if not isinstance(mcp, dict):
     print("MCP_NOT_OBJECT"); sys.exit(4)
 
+# Preserve existing env (idempotency: if user previously opted out, keep
+# the key even if AUTOUPDATE wasn't passed this run).
+existing_entry = mcp.get("agentmesh") if isinstance(mcp.get("agentmesh"), dict) else {}
+existing_env = existing_entry.get("env") if isinstance(existing_entry.get("env"), dict) else {}
+
+new_env = dict(existing_env)
+if no_au:
+    new_env["AGENTMESH_NO_AUTOUPDATE"] = "1"
+
 desired = {"command": bin_path, "args": args}
-if mcp.get("agentmesh") == desired:
+if new_env:
+    desired["env"] = new_env
+
+if existing_entry == desired:
     print("ALREADY"); sys.exit(0)
 
 existed = os.path.exists(cfg)

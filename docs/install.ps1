@@ -17,6 +17,12 @@
 #   $env:SKIP_REGISTER   if set, never touch any harness config
 #   $env:CLAUDE_CONFIG, $env:CURSOR_CONFIG, $env:CODEX_CONFIG, $env:ANTIGRAVITY_CONFIG
 #                        override individual config paths
+#   $env:AUTOUPDATE      answer the "Enable agentmesh auto-updates?" prompt
+#                        non-interactively. yes/1/true (default if absent in
+#                        a non-interactive shell) leaves the in-binary
+#                        auto-update on; no/0/false adds
+#                        AGENTMESH_NO_AUTOUPDATE=1 to each harness's mcp env
+#                        so the binary skips its periodic release check.
 
 [CmdletBinding()]
 param()
@@ -457,10 +463,34 @@ if ([string]::IsNullOrWhiteSpace($harness)) {
   return
 }
 
+# ---- auto-update opt-in --------------------------------------------------
+# Default behaviour of the binary is to check GitHub every ~6h and replace
+# itself. Honour $env:AUTOUPDATE if set; otherwise prompt (when interactive);
+# otherwise default to "yes". $noAutoUpdate=$true means add
+# AGENTMESH_NO_AUTOUPDATE=1 to each harness's mcp env block.
+$noAutoUpdate = $false
+if ($env:AUTOUPDATE) {
+  switch -Regex ($env:AUTOUPDATE.ToLower()) {
+    '^(y|yes|1|true|on)$'  { $noAutoUpdate = $false }
+    '^(n|no|0|false|off)$' { $noAutoUpdate = $true  }
+    default { Warn "AUTOUPDATE=$($env:AUTOUPDATE) not understood - leaving auto-update enabled" }
+  }
+} elseif ([Environment]::UserInteractive -and $Host.UI.RawUI) {
+  Write-Host ""
+  Write-Host "Enable agentmesh auto-updates?" -ForegroundColor White -NoNewline
+  Write-Host " (binary checks GitHub for new releases"
+  Write-Host "every ~6 hours and replaces itself; restart your harness to pick up"
+  Write-Host "the update) [Y/n]: " -NoNewline
+  $ans = Read-Host
+  if ($ans -and ($ans.Trim().ToLower() -match '^(n|no|never|false|0)$')) {
+    $noAutoUpdate = $true
+  }
+}
+
 # ---- Registration helpers (PowerShell-native, no Python) -----------------
 
 function Register-McpJson {
-  param([string]$Kind, [string]$ConfigPath, [string]$BinPath, [string]$NameOverride)
+  param([string]$Kind, [string]$ConfigPath, [string]$BinPath, [string]$NameOverride, [bool]$NoAutoUpdate)
 
   $dir = Split-Path -Parent $ConfigPath
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -481,16 +511,55 @@ function Register-McpJson {
   }
   $servers = $data.mcpServers
 
-  $args = @('serve')
-  if ($NameOverride) { $args += "--name=$NameOverride" }
-  $desired = [PSCustomObject]@{ command = $BinPath; args = $args }
+  $argList = @('serve')
+  if ($NameOverride) { $argList += "--name=$NameOverride" }
 
+  # Preserve any existing env keys so we merge rather than overwrite. This
+  # also makes the fast-path/re-run idempotent: if the user previously
+  # opted out, the key stays even if this run didn't pass AUTOUPDATE=no.
+  $existingEnv = $null
   $present = $servers.PSObject.Properties.Match('agentmesh').Count -gt 0
+  if ($present) {
+    $cur = $servers.agentmesh
+    if ($cur -and $cur.PSObject.Properties.Match('env').Count -gt 0) {
+      $existingEnv = $cur.env
+    }
+  }
+
+  # Build the new env object (PSCustomObject) by copying existing keys then
+  # adding AGENTMESH_NO_AUTOUPDATE when opted out.
+  $newEnv = New-Object PSObject
+  $hasEnvKeys = $false
+  if ($existingEnv) {
+    foreach ($p in $existingEnv.PSObject.Properties) {
+      $newEnv | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+      $hasEnvKeys = $true
+    }
+  }
+  if ($NoAutoUpdate) {
+    $newEnv | Add-Member -NotePropertyName 'AGENTMESH_NO_AUTOUPDATE' -NotePropertyValue '1' -Force
+    $hasEnvKeys = $true
+  }
+
+  $desired = [PSCustomObject]@{ command = $BinPath; args = $argList }
+  if ($hasEnvKeys) {
+    $desired | Add-Member -NotePropertyName 'env' -NotePropertyValue $newEnv
+  }
+
   if ($present) {
     $cur = $servers.agentmesh
     $sameCmd  = ($cur.command -eq $desired.command)
     $sameArgs = ((Compare-Object $cur.args $desired.args -SyncWindow 0) -eq $null)
-    if ($sameCmd -and $sameArgs) {
+    $curHasEnv = $cur.PSObject.Properties.Match('env').Count -gt 0
+    $sameEnv = $false
+    if (-not $hasEnvKeys -and -not $curHasEnv) {
+      $sameEnv = $true
+    } elseif ($hasEnvKeys -and $curHasEnv) {
+      $curJson = ($cur.env  | ConvertTo-Json -Depth 5 -Compress)
+      $newJson = ($newEnv   | ConvertTo-Json -Depth 5 -Compress)
+      $sameEnv = ($curJson -eq $newJson)
+    }
+    if ($sameCmd -and $sameArgs -and $sameEnv) {
       OK "${Kind}: already configured"; return
     }
     $servers.agentmesh = $desired
@@ -506,7 +575,7 @@ function Register-McpJson {
 }
 
 function Register-CodexToml {
-  param([string]$ConfigPath, [string]$BinPath, [string]$NameOverride)
+  param([string]$ConfigPath, [string]$BinPath, [string]$NameOverride, [bool]$NoAutoUpdate)
 
   $dir = Split-Path -Parent $ConfigPath
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -515,6 +584,9 @@ function Register-CodexToml {
   $argsToml = '"serve"'
   if ($NameOverride) { $argsToml = "`"serve`", `"--name=$NameOverride`"" }
   $section = "`n[mcp_servers.agentmesh]`ncommand = `"$tomlBin`"`nargs = [$argsToml]`n"
+  if ($NoAutoUpdate) {
+    $section += "env = { AGENTMESH_NO_AUTOUPDATE = `"1`" }`n"
+  }
 
   if (-not (Test-Path $ConfigPath)) {
     Set-Content -Path $ConfigPath -Value $section.TrimStart() -Encoding UTF8
@@ -523,6 +595,31 @@ function Register-CodexToml {
   }
   $text = Get-Content -Raw -Path $ConfigPath -Encoding UTF8
   if ($text -match '\[mcp_servers\.agentmesh\]') {
+    # Section already exists. Merge env when opted out and key absent.
+    if ($NoAutoUpdate -and ($text -notmatch 'AGENTMESH_NO_AUTOUPDATE')) {
+      Copy-Item $ConfigPath "$ConfigPath.bak" -Force
+      $pattern = '(?ms)(^\[mcp_servers\.agentmesh\][^\[]*)'
+      if ($text -match $pattern) {
+        $block = $Matches[1]
+        $envPattern = '(?m)^env\s*=\s*\{([^}]*)\}\s*$'
+        if ($block -match $envPattern) {
+          $inner = $Matches[1].Trim().TrimEnd(',').Trim()
+          if ($inner) {
+            $newInner = "$inner, AGENTMESH_NO_AUTOUPDATE = `"1`""
+          } else {
+            $newInner = " AGENTMESH_NO_AUTOUPDATE = `"1`" "
+          }
+          $newBlock = $block -replace $envPattern, "env = { $newInner }"
+        } else {
+          $stripped = $block.TrimEnd("`n")
+          $newBlock = "$stripped`nenv = { AGENTMESH_NO_AUTOUPDATE = `"1`" }`n"
+        }
+        $newText = $text.Replace($block, $newBlock)
+        Set-Content -Path $ConfigPath -Value $newText -Encoding UTF8 -NoNewline
+        OK "codex: registered in $ConfigPath (backup at $ConfigPath.bak)"
+        return
+      }
+    }
     OK "codex: already configured"; return
   }
   Copy-Item $ConfigPath "$ConfigPath.bak" -Force
@@ -538,12 +635,12 @@ Write-Host ""
 foreach ($h in ($harness -split '\s+' | Where-Object { $_ })) {
   switch ($h) {
     'claude'      {
-      Register-McpJson 'claude' $claudeCfg $binPath $nameOver
+      Register-McpJson 'claude' $claudeCfg $binPath $nameOver $noAutoUpdate
       Register-ClaudeHook $claudeHooks $binPath
     }
-    'cursor'      { Register-McpJson 'cursor'      $cursorCfg      $binPath $nameOver }
-    'codex'       { Register-CodexToml             $codexCfg       $binPath $nameOver }
-    'antigravity' { Register-McpJson 'antigravity' $antigravityCfg $binPath $nameOver }
+    'cursor'      { Register-McpJson 'cursor'      $cursorCfg      $binPath $nameOver $noAutoUpdate }
+    'codex'       { Register-CodexToml             $codexCfg       $binPath $nameOver $noAutoUpdate }
+    'antigravity' { Register-McpJson 'antigravity' $antigravityCfg $binPath $nameOver $noAutoUpdate }
     default       { Warn "unknown harness: $h (allowed: claude, cursor, codex, antigravity)" }
   }
 }

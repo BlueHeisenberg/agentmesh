@@ -5,3 +5,6 @@
 
 # Identity (per-machine, never committed)
 .agentmesh/
+
+# GoReleaser build output - not committed
+/dist/

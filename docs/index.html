@@ -609,10 +609,19 @@ agentmesh: discovered peer <span class="you">Cursor</span> myproj@dev#7c1e at 12
     <p class="muted" style="margin-top:18px;">
       Non-interactive? Pass env vars to <code>sh</code> / set <code>$env:</code> before <code>iex</code>:
       <code>HARNESS=claude,cursor</code>,
-      <code>VERSION=v0.4.0</code>,
+      <code>VERSION=v0.5.0</code>,
       <code>NAME=davids-laptop</code>,
-      <code>SKIP_REGISTER=1</code>.
+      <code>SKIP_REGISTER=1</code>,
+      <code>AUTOUPDATE=no</code>.
       Idempotent: safe to re-run; a <code>.bak</code> of every config is written before any edit.
+    </p>
+    <p class="muted" style="margin-top:14px;">
+      The installer also asks once whether to enable auto-updates (default yes). With it on, each
+      <code>agentmesh serve</code> polls GitHub for new releases every ~6 hours and swaps the
+      binary on disk; the running session keeps serving until you restart your harness, so
+      updates are invisible mid-conversation. Opt out at install time, set
+      <code>AGENTMESH_NO_AUTOUPDATE=1</code> in the harness's MCP env, or force a check with
+      <code>agentmesh self-update</code>.
     </p>
   </section>
 
