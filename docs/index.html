@@ -579,7 +579,7 @@ agentmesh: discovered peer <span class="you">Cursor</span> myproj@dev#7c1e at 12
   <section id="install">
     <p class="section-label"><span class="num">// 02</span>install</p>
     <h2>One line. Then it's just there.</h2>
-    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and then asks via an interactive checkbox menu which harness(es) to wire <code>agentmesh</code> into: Claude Code, Cursor, ChatGPT Codex (CLI), Antigravity. Configs are edited safely (a <code>.bak</code> is written first; re-running is idempotent). On Claude Code, a <code>UserPromptSubmit</code> hook is also installed so incoming mesh messages get prepended to your next prompt automatically: you see the messages, the agent sees them, all in the same turn.</p>
+    <p>The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and then asks via an interactive checkbox menu which harness(es) to wire <code>agentmesh</code> into: Claude Code, Cursor, ChatGPT Codex (CLI), Antigravity. Configs are edited safely (a <code>.bak</code> is written first; re-running is idempotent). On Claude Code, a <code>UserPromptSubmit</code> hook is also installed so a one-line notice lands on your next prompt when mesh messages are waiting: the agent reads them with <code>mesh_inbox</code> and relays them to you in the same turn.</p>
 
     <div class="code">
       <div class="code-head">
@@ -630,17 +630,18 @@ agentmesh: discovered peer <span class="you">Cursor</span> myproj@dev#7c1e at 12
   <!-- MESSAGE FLOW ───────────────────────────────────────────── -->
   <section id="flow">
     <p class="section-label"><span class="num">// 03</span>how a message arrives</p>
-    <h2>Push, then prepend.</h2>
+    <h2>Push, then ping.</h2>
     <p>
       A peer's agent calls <code>mesh_send</code>; the message lands in this session's in-memory inbox.
-      On your next prompt, the <code>UserPromptSubmit</code> hook drains the inbox and prepends those messages
-      to whatever the agent is about to see.
+      On your next prompt, the <code>UserPromptSubmit</code> hook prepends a single line —
+      <code>[mesh] N unread peer messages…</code> — and the agent fetches the bodies with
+      <code>mesh_inbox</code>. Empty inbox, empty hook: an idle mesh costs zero context.
     </p>
 
     <figure class="diagram reveal r2">
       <img src="assets/flow-push.svg" alt="Peer sends a message, it arrives in the local inbox, the hook prepends it to the next user prompt, the agent reads and replies in the same turn">
       <figcaption>
-        Peer sends, inbox stores, hook prepends, agent reads and replies, all in the same turn. No polling, no copy-paste.
+        Peer sends, inbox stores, hook pings, agent reads and replies, all in the same turn. No polling, no copy-paste.
       </figcaption>
     </figure>
 

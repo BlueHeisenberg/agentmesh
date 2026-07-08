@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	Version       = "0.5.2"
+	Version       = "0.6.0"
 	PeerNmHeader  = "X-Agentmesh-Peer-Name"
 	defaultClient = 30 * time.Second
 )

@@ -40,26 +40,14 @@ const (
 
 // ServerInstructions is published to the MCP client as part of the initialize
 // response and lands in the agent's system prompt for harnesses that surface
-// it. Designed to make the agent call mesh_inbox at every turn boundary
-// without the user having to ask.
-const ServerInstructions = `agentmesh connects this session to other AI agents in nearby harness sessions - same machine by default, LAN if you call mesh_open_lan. Tools start with mesh_*.
+// it. Kept deliberately short: incoming messages queue in the inbox and are
+// announced by a one-line hook ping, so nothing here needs to order the agent
+// to poll every turn.
+const ServerInstructions = `agentmesh connects this session to other AI agents in nearby harness sessions - same machine by default, LAN after mesh_open_lan. Tools start with mesh_*.
 
-INCOMING PEER MESSAGES — handling rule (IMPORTANT):
+Incoming peer messages queue in an inbox; nothing is injected into your context automatically. When messages are waiting, a UserPromptSubmit hook (Claude Code) prepends a one-line "[mesh] N unread" ping to the user's prompt - on seeing it, call mesh_inbox and surface each message to the user (sender, topic, one-line summary) before continuing: they arrived between turns and the user has not seen them.
 
-At the start of EVERY user turn, before doing other work, call mesh_inbox to check for messages from peers.
-
-When new messages are present, you MUST surface them to the user in your reply, even if the user's prompt is about something else entirely. The user has not seen these messages - they arrived between turns. Silently internalising peer input is the wrong default; the user needs to know peers are reaching out.
-
-The expected shape of your reply when new messages exist:
-  1. A short, prominent acknowledgement: who the message came from (peer name), what the topic was, and a one-line summary of the content. Place this at or near the start of your reply.
-  2. Then engage with the message content - integrate it into your work where relevant, or set it aside with a clear note.
-  3. Then handle the user's original prompt as usual.
-
-A separate UserPromptSubmit hook (installed by default on Claude Code) may also inject mesh messages as additional context. The same rule applies: relay them to the user, don't swallow them.
-
-NODE VISIBILITY:
-
-By default this node is loopback-only - visible only to other sessions on this same machine. Call mesh_open_lan if you want this session reachable across the local network. Use mesh_set_name to rename the node when its default ("<folder>@<branch>#<tag>") isn't descriptive enough.`
+This node starts loopback-only (visible only to sessions on this machine). Call mesh_open_lan to be reachable across the local network, mesh_close_lan to retreat, mesh_set_name to rename.`
 
 // Node holds runtime state shared by all MCP tool handlers.
 type Node struct {
@@ -256,8 +244,8 @@ func NewMCPServer(node *Node) *server.MCPServer {
 				"Live inbox of messages received from mesh peers. Harnesses can subscribe "+
 					"to notifications/resources/updated for this URI to know when new "+
 					"messages arrive. Recommended access pattern: the agent calls mesh_inbox "+
-					"at the start of each turn (per server instructions) rather than reading "+
-					"this resource directly.",
+					"when the hook pings unread messages, rather than reading this "+
+					"resource directly.",
 			),
 			mcplib.WithMIMEType("application/json"),
 		),

@@ -20,7 +20,7 @@ agentmesh is a small Go binary that runs alongside each AI coding-assistant sess
 
 ## Install
 
-One line. The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and then asks via an interactive checkbox menu which harness(es) to wire `agentmesh` into: Claude Code, Cursor, ChatGPT Codex (CLI), Antigravity. Configs are edited safely (a `.bak` is written first; re-running is idempotent). On Claude Code, a `UserPromptSubmit` hook is also installed so incoming mesh messages get prepended to your next prompt automatically.
+One line. The installer downloads the latest signed release, verifies its sha256, drops the binary in place, and then asks via an interactive checkbox menu which harness(es) to wire `agentmesh` into: Claude Code, Cursor, ChatGPT Codex (CLI), Antigravity. Configs are edited safely (a `.bak` is written first; re-running is idempotent). On Claude Code, a `UserPromptSubmit` hook is also installed so you get a one-line notice on your next prompt when mesh messages are waiting.
 
 **Linux & macOS** (amd64 + arm64)
 
@@ -65,7 +65,7 @@ Every assistant session you open spawns its own short-lived `agentmesh` process.
   <img src="docs/assets/flow-push.svg" alt="Message flow from peer agent to local session" width="100%">
 </p>
 
-A peer's agent calls `mesh_send`; the message lands in this session's in-memory inbox. On the next user prompt, the `UserPromptSubmit` hook drains the inbox and prepends the messages to the prompt the agent sees. The agent reads them in the same turn and can reply with another `mesh_send` straight away.
+A peer's agent calls `mesh_send`; the message lands in this session's in-memory inbox. On the next user prompt, the `UserPromptSubmit` hook prepends a single line — `[mesh] N unread peer messages from …` — and nothing else; when the inbox is empty it emits nothing, so an idle mesh costs zero context. The agent reads the actual messages with `mesh_inbox`, surfaces them to the user, and can reply with another `mesh_send` in the same turn.
 
 ## Going across the LAN
 

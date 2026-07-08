@@ -5,9 +5,9 @@
 //	agentmesh serve [--open-lan]      MCP stdio server. Loopback-only by
 //	                                  default; the agent calls mesh_open_lan
 //	                                  at runtime to expose the session.
-//	agentmesh hook prompt-inject      Read unread mesh messages for this
-//	                                  session and print them to stdout in a
-//	                                  format the harness will prepend to the
+//	agentmesh hook prompt-inject      If this session has unread mesh
+//	                                  messages, print a one-line unread-count
+//	                                  ping for the harness to prepend to the
 //	                                  user's next prompt. Designed for
 //	                                  Claude Code's UserPromptSubmit hook.
 //	agentmesh version                 Print version + exit.
@@ -103,10 +103,10 @@ Subcommands:
                                 by default (same-machine peers visible); the
                                 agent can call mesh_open_lan to also accept
                                 LAN traffic.
-  hook prompt-inject            Emit any unread mesh messages for this
-                                session to stdout. Run from a harness's
-                                UserPromptSubmit hook so peers' messages
-                                appear in the user's next prompt.
+  hook prompt-inject            Emit a one-line unread-count ping when this
+                                session has unread mesh messages. Run from a
+                                harness's UserPromptSubmit hook; the agent
+                                then reads the messages via mesh_inbox.
   whoami                        Print a short self-check (version, identity
                                 model, default name in current dir).
   version                       Print version and exit.
@@ -260,14 +260,13 @@ func cmdHook(args []string) {
 	}
 }
 
-// cmdHookPromptInject reads any unread mesh messages for this session and
-// emits the documented Claude Code UserPromptSubmit JSON envelope
-// (hookSpecificOutput.additionalContext) so they become part of the agent's
-// context for the upcoming turn. The injected text is framed imperatively:
-// the agent is told these arrived between turns, that the user hasn't seen
-// them, and that it should surface sender + topic + summary to the user
-// before engaging with the content - so an agent answering an unrelated
-// question still relays peer activity instead of silently swallowing it.
+// cmdHookPromptInject checks for unread mesh messages for this session and,
+// when there are any, emits the documented Claude Code UserPromptSubmit JSON
+// envelope (hookSpecificOutput.additionalContext) containing a single-line
+// unread-count ping. Message bodies are deliberately NOT injected - the agent
+// reads them via the mesh_inbox tool - so an idle mesh costs zero context and
+// a busy one costs one line. Each message is pinged once (MarkRead after a
+// successful emit); it stays readable in mesh_inbox regardless.
 //
 // Outputs nothing (and exits 0) when there are no unread messages, no
 // session store, or any read/marshal error occurs - never fail the user's
@@ -284,11 +283,10 @@ func cmdHookPromptInject() {
 		return
 	}
 
-	context := formatHookContext(msgs)
 	payload := map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "UserPromptSubmit",
-			"additionalContext": context,
+			"additionalContext": formatHookPing(msgs),
 		},
 	}
 	out, err := json.Marshal(payload)
@@ -301,66 +299,40 @@ func cmdHookPromptInject() {
 	_ = store.MarkRead()
 }
 
-// formatHookContext builds the additionalContext string for the agent. The
-// header is directive on purpose: the agent must mention these messages to
-// the user in its reply, even when the user's prompt is on a different
-// topic. Without that prompt, agents tend to internalise peer input and
-// move on, which defeats the "messages just appear" UX.
-func formatHookContext(msgs []sessionstore.Message) string {
-	var b strings.Builder
-
+// formatHookPing builds the one-line unread notice. It names up to three
+// distinct senders, flags first contacts (the trust-relevant signal), and
+// tells the agent the one thing it must do: call mesh_inbox and surface the
+// messages to the user, who hasn't seen them.
+func formatHookPing(msgs []sessionstore.Message) string {
+	var senders []string
+	seen := map[string]bool{}
+	firstContact := false
+	for _, m := range msgs {
+		if m.FirstContact {
+			firstContact = true
+		}
+		if seen[m.FromName] {
+			continue
+		}
+		seen[m.FromName] = true
+		if len(senders) < 3 {
+			senders = append(senders, m.FromName)
+		}
+	}
+	from := strings.Join(senders, ", ")
+	if len(seen) > 3 {
+		from += fmt.Sprintf(" +%d more", len(seen)-3)
+	}
 	plural := "messages"
 	if len(msgs) == 1 {
 		plural = "message"
 	}
-	fmt.Fprintf(&b, "[mesh-inbox] %d new peer %s arrived since your last turn.\n", len(msgs), plural)
-	b.WriteString("These came from other AI agents on the same machine or LAN. ")
-	b.WriteString("THE USER HAS NOT SEEN THEM. Before answering the user's prompt, briefly surface each one: sender name, topic, and a one-line summary of the content. ")
-	b.WriteString("Then engage with the message content as part of your reply - treat it as a legitimate input alongside the user's prompt, even if the user asked about something unrelated.\n\n")
-
-	for i, m := range msgs {
-		short := m.FromPeerID
-		if len(short) > 8 {
-			short = short[:8]
-		}
-		topic := m.Topic
-		if topic == "" {
-			topic = "(no topic)"
-		}
-		ts := m.ReceivedAt.Format("15:04:05")
-		first := ""
-		if m.FirstContact {
-			first = "  [first contact from this peer]"
-		}
-		fmt.Fprintf(&b, "message %d: from %s (peer_id=%s) topic=%q at %s%s\n",
-			i+1, m.FromName, short, topic, ts, first)
-
-		var pretty []byte
-		if len(m.Body) > 0 {
-			if tmp, perr := indentJSON(m.Body); perr == nil {
-				pretty = tmp
-			} else {
-				pretty = m.Body
-			}
-		}
-		if len(pretty) > 0 {
-			b.WriteString("body:\n")
-			for _, line := range strings.Split(string(pretty), "\n") {
-				fmt.Fprintf(&b, "  %s\n", line)
-			}
-		}
-		b.WriteString("\n")
+	note := ""
+	if firstContact {
+		note = "; includes a first contact"
 	}
-	b.WriteString("[end mesh-inbox]")
-	return b.String()
-}
-
-func indentJSON(raw []byte) ([]byte, error) {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, err
-	}
-	return json.MarshalIndent(v, "", "  ")
+	return fmt.Sprintf("[mesh] %d unread peer %s from %s%s - the user has not seen them; call mesh_inbox to read, then surface them to the user.",
+		len(msgs), plural, from, note)
 }
 
 // ----------------------------------------------------------------------------
