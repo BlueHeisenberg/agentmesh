@@ -3,8 +3,12 @@
 //
 // libp2p/zeroconf's standard Register() refuses to publish loopback IPs as A
 // records (its addrsForInterface hard-codes !IsLoopback). Same-machine
-// discovery is the *primary* agentmesh use case, so we use RegisterProxy
-// throughout and pass the IPs we want advertised explicitly.
+// discovery is the *primary* use case, so we use RegisterProxy throughout and
+// pass the IPs we want advertised explicitly.
+//
+// The package is service-type agnostic: callers pass their own mDNS service
+// type (e.g. "_agentmesh._tcp") to Advertise and Browse. The TXT record
+// format is fixed: v=1, pk=<hex peer id>, name=<display name>.
 package discovery
 
 import (
@@ -19,10 +23,12 @@ import (
 	zeroconf "github.com/libp2p/zeroconf/v2"
 )
 
-const (
-	ServiceType = "_agentmesh._tcp"
-	Domain      = "local."
-)
+const Domain = "local."
+
+// Debug enables diagnostic logging of discovered peers and raw mDNS entries
+// to stderr. Callers set it once at startup (agentmesh sets it from the
+// AGENTMESH_DEBUG environment variable).
+var Debug bool
 
 // Peer is what we know about another node from mDNS.
 type Peer struct {
@@ -78,8 +84,8 @@ func (r *Registry) upsert(p Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.peers[p.PeerID] = &p
-	if os.Getenv("AGENTMESH_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "agentmesh: discovered peer %s (%s) at %s\n",
+	if Debug {
+		fmt.Fprintf(os.Stderr, "discovery: discovered peer %s (%s) at %s\n",
 			p.Name, p.PeerID[:16], p.Addr)
 	}
 }
@@ -102,7 +108,7 @@ func LoopbackInterfaces() []net.Interface {
 }
 
 // NonLoopbackMulticastInterfaces returns up, multicast-capable, non-loopback
-// interfaces — the LAN-facing set we add to the scope after mesh_open_lan.
+// interfaces — the LAN-facing set added to the scope when going LAN-wide.
 func NonLoopbackMulticastInterfaces() []net.Interface {
 	all, _ := net.Interfaces()
 	var out []net.Interface
@@ -143,11 +149,12 @@ func LANIPv4s() []string {
 // Advertise
 // ----------------------------------------------------------------------------
 
-// Advertise registers this node on mDNS over the given interfaces, publishing
-// the given IPs as A records. Use RegisterProxy because the library's plain
-// Register() filters out loopback IPs (server.go: addrsForInterface drops
-// anything that returns true from IsLoopback). Returns a shutdown func.
-func Advertise(name, peerID string, port int, ifaces []net.Interface, ips []string) (func(), error) {
+// Advertise registers this node on mDNS under the given service type (e.g.
+// "_agentmesh._tcp") over the given interfaces, publishing the given IPs as A
+// records. Use RegisterProxy because the library's plain Register() filters
+// out loopback IPs (server.go: addrsForInterface drops anything that returns
+// true from IsLoopback). Returns a shutdown func.
+func Advertise(service, name, peerID string, port int, ifaces []net.Interface, ips []string) (func(), error) {
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("Advertise: no IPs to publish")
 	}
@@ -165,7 +172,7 @@ func Advertise(name, peerID string, port int, ifaces []net.Interface, ips []stri
 		"pk=" + peerID,
 		"name=" + name,
 	}
-	server, err := zeroconf.RegisterProxy(instance, ServiceType, Domain, port, host, ips, txt, ifaces)
+	server, err := zeroconf.RegisterProxy(instance, service, Domain, port, host, ips, txt, ifaces)
 	if err != nil {
 		return nil, fmt.Errorf("mdns register: %w", err)
 	}
@@ -176,15 +183,16 @@ func Advertise(name, peerID string, port int, ifaces []net.Interface, ips []stri
 // Browse
 // ----------------------------------------------------------------------------
 
-// Browse runs until ctx is cancelled, feeding mDNS announcements into reg.
-// Restricted to the given interfaces (use LoopbackInterfaces for same-machine
-// only, or LoopbackInterfaces + NonLoopbackMulticastInterfaces for LAN mode).
-func Browse(ctx context.Context, reg *Registry, ifaces []net.Interface) error {
+// Browse runs until ctx is cancelled, feeding mDNS announcements for the given
+// service type into reg. Restricted to the given interfaces (use
+// LoopbackInterfaces for same-machine only, or LoopbackInterfaces +
+// NonLoopbackMulticastInterfaces for LAN mode).
+func Browse(ctx context.Context, service string, reg *Registry, ifaces []net.Interface) error {
 	merged := make(chan *zeroconf.ServiceEntry, 64)
 	go func() {
 		for entry := range merged {
-			if os.Getenv("AGENTMESH_DEBUG") != "" {
-				fmt.Fprintf(os.Stderr, "agentmesh: mdns entry instance=%q text=%v\n",
+			if Debug {
+				fmt.Fprintf(os.Stderr, "discovery: mdns entry instance=%q text=%v\n",
 					entry.Instance, entry.Text)
 			}
 			p := entryToPeer(entry)
@@ -215,7 +223,7 @@ func Browse(ctx context.Context, reg *Registry, ifaces []net.Interface) error {
 			if len(ifaces) > 0 {
 				opts = append(opts, zeroconf.SelectIfaces(ifaces))
 			}
-			_ = zeroconf.Browse(round, ServiceType, Domain, entries, opts...)
+			_ = zeroconf.Browse(round, service, Domain, entries, opts...)
 			cancel()
 			// libp2p/zeroconf closes `entries` itself in params.done(); do NOT
 			// close it here or we double-close-panic.

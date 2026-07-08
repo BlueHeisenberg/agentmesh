@@ -1,96 +1,34 @@
-// Package identity holds the per-process Ed25519 keypair this agentmesh
-// instance uses for mTLS and for its mesh peer_id.
+// Package identity holds the agentmesh-flavored identity layer: a thin
+// re-export of pkg/identity (the generic Ed25519 keypair + mTLS cert) plus
+// the display-name derivation that is specific to agentmesh's session model.
 //
-// Identity is ephemeral by design: a fresh keypair is generated at every
-// `agentmesh serve` startup and exists only in memory. There is no on-disk
-// persistence and no shared identity between sessions on the same machine.
-// This is the property that makes multiple harness sessions on one machine
-// mutually visible — each session has a distinct peer_id, so the registry's
-// self-filter doesn't hide them from each other.
+// agentmesh identity is ephemeral by design: a fresh keypair is generated at
+// every `agentmesh serve` startup and exists only in memory. There is no
+// on-disk persistence and no shared identity between sessions on the same
+// machine. This is the property that makes multiple harness sessions on one
+// machine mutually visible — each session has a distinct peer_id, so the
+// registry's self-filter doesn't hide them from each other.
 //
 // The tradeoff: peer_id changes on every restart. `allow_peers` lists in
 // mesh_share are session-scoped — if either side restarts, re-share. That's
-// the right shape for chat-style use; if anyone needs persistent identities
-// (long-lived allow lists, "remember this peer across days"), that's a v0.5+
-// design discussion.
+// the right shape for chat-style use; persistent identities live in
+// pkg/identity (FromPrivateKey) for consumers like lore that need them.
 package identity
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/hex"
-	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+
+	pkgidentity "github.com/BlueHeisenberg/agentmesh/pkg/identity"
 )
 
-type Identity struct {
-	PublicKey  ed25519.PublicKey
-	PrivateKey ed25519.PrivateKey
-}
-
-// PeerID returns the hex-encoded public key — the stable identifier for this
-// process across mDNS announcements, mTLS handshakes, and message envelopes.
-func (i *Identity) PeerID() string { return hex.EncodeToString(i.PublicKey) }
-
-// ShortID returns the first 16 hex chars of PeerID, suitable for display.
-func (i *Identity) ShortID() string { return i.PeerID()[:16] }
-
-// Tag returns the first 4 hex chars of PeerID, suitable for disambiguating
-// same-project sessions in the default display name.
-func (i *Identity) Tag() string { return i.PeerID()[:4] }
+// Identity is re-exported from pkg/identity so existing agentmesh code keeps
+// working unchanged.
+type Identity = pkgidentity.Identity
 
 // Ephemeral generates a fresh Ed25519 keypair held only in memory.
-func Ephemeral() (*Identity, error) {
-	seed := make([]byte, ed25519.SeedSize)
-	if _, err := rand.Read(seed); err != nil {
-		return nil, fmt.Errorf("generate seed: %w", err)
-	}
-	priv := ed25519.NewKeyFromSeed(seed)
-	return &Identity{
-		PrivateKey: priv,
-		PublicKey:  priv.Public().(ed25519.PublicKey),
-	}, nil
-}
-
-// TLSCertificate builds a self-signed X.509 cert backed by the Ed25519 keypair.
-// The cert's CommonName is the hex peer_id; its Subject Public Key is the
-// Ed25519 public key. Peers can verify it by knowing the peer_id we advertised
-// over mDNS. Same cert is used for both server and client auth (mTLS).
-func (i *Identity) TLSCertificate() (tls.Certificate, error) {
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: i.PeerID()},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageServerAuth,
-			x509.ExtKeyUsageClientAuth,
-		},
-		BasicConstraintsValid: true,
-		IsCA:                  true, // self-signed cert is its own CA
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, i.PublicKey, i.PrivateKey)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("create cert: %w", err)
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	return tls.Certificate{
-		Certificate: [][]byte{der},
-		PrivateKey:  i.PrivateKey,
-		Leaf:        leaf,
-	}, nil
-}
+func Ephemeral() (*Identity, error) { return pkgidentity.Ephemeral() }
 
 // DefaultDisplayName composes the agent-facing display name for this node
 // from the current working directory and git branch, optionally tagged with

@@ -15,12 +15,16 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/BlueHeisenberg/agentmesh/internal/discovery"
 	"github.com/BlueHeisenberg/agentmesh/internal/identity"
 	"github.com/BlueHeisenberg/agentmesh/internal/inbox"
 	"github.com/BlueHeisenberg/agentmesh/internal/shares"
 	"github.com/BlueHeisenberg/agentmesh/internal/transport"
+	"github.com/BlueHeisenberg/agentmesh/pkg/discovery"
 )
+
+// serviceType is agentmesh's mDNS service type, passed to the generic
+// pkg/discovery Advertise/Browse.
+const serviceType = "_agentmesh._tcp"
 
 // Visibility describes the current advertising scope.
 //
@@ -116,13 +120,13 @@ func (n *Node) transition(target string) (int, error) {
 		ips = []string{"127.0.0.1"}
 	}
 
-	newStop, err := discovery.Advertise(currentName, n.ID.PeerID(), newPort, ifaces, ips)
+	newStop, err := discovery.Advertise(serviceType, currentName, n.ID.PeerID(), newPort, ifaces, ips)
 	if err != nil {
 		return 0, fmt.Errorf("advertise: %w", err)
 	}
 	bctx, bcancel := context.WithCancel(context.Background())
 	go func() {
-		if err := discovery.Browse(bctx, n.Peers, ifaces); err != nil && bctx.Err() == nil {
+		if err := discovery.Browse(bctx, serviceType, n.Peers, ifaces); err != nil && bctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "agentmesh: browse: %v\n", err)
 		}
 	}()

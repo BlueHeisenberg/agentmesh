@@ -31,7 +31,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/BlueHeisenberg/agentmesh/internal/discovery"
 	"github.com/BlueHeisenberg/agentmesh/internal/identity"
 	"github.com/BlueHeisenberg/agentmesh/internal/inbox"
 	mcpserver "github.com/BlueHeisenberg/agentmesh/internal/mcp"
@@ -39,6 +38,7 @@ import (
 	"github.com/BlueHeisenberg/agentmesh/internal/shares"
 	"github.com/BlueHeisenberg/agentmesh/internal/transport"
 	"github.com/BlueHeisenberg/agentmesh/internal/update"
+	"github.com/BlueHeisenberg/agentmesh/pkg/discovery"
 )
 
 // autoUpdateInterval is how often each running `agentmesh serve` checks GitHub
@@ -125,6 +125,9 @@ func cmdServe(args []string) {
 	openLAN := fs.Bool("open-lan", false, "start in LAN mode immediately (default: loopback; the agent can call mesh_open_lan later)")
 	nameFlag := fs.String("name", "", "explicit display name (default: derived from CWD + git branch + peer_id tag)")
 	_ = fs.Parse(args)
+
+	// pkg/discovery no longer reads the env itself; wire the debug flag here.
+	discovery.Debug = os.Getenv("AGENTMESH_DEBUG") != ""
 
 	// Best-effort cleanup of stale session dirs from previously-killed
 	// harness sessions. Runs before we create our own so we don't sweep
