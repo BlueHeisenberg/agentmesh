@@ -36,6 +36,7 @@ const defaultClientTimeout = 30 * time.Second
 type Server struct {
 	Cert    tls.Certificate // self-signed, Ed25519-backed (identity.TLSCertificate)
 	Handler http.Handler    // application routes
+	Port    int             // fixed listen port; 0 = ephemeral (callers with static peers need stability across restarts)
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -64,11 +65,11 @@ func (s *Server) Rebind(bindAll bool) (int, error) {
 // advertised address would get "connection refused". IPv4-only also matches
 // the peer-address picker, which filters to IPv4 candidates.
 func (s *Server) Start(bindAll bool) (int, error) {
-	addr := "127.0.0.1:0"
+	host := "127.0.0.1"
 	if bindAll {
-		addr = "0.0.0.0:0"
+		host = "0.0.0.0"
 	}
-	lis, err := net.Listen("tcp4", addr)
+	lis, err := net.Listen("tcp4", fmt.Sprintf("%s:%d", host, s.Port))
 	if err != nil {
 		return 0, err
 	}
