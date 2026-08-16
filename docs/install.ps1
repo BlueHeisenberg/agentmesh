@@ -298,7 +298,7 @@ function Register-ClaudeHook {
   # hook command is a SHELL string (Claude Code dispatches it through a
   # shell, which on Windows tends to be Git Bash's /usr/bin/bash). Bash
   # treats backslashes in unquoted words as escape characters and silently
-  # eats them, mangling "C:\Users\alice\..." into "C:UsersaliceAppData...".
+  # eats them, mangling "C:\Users\you\..." into "C:UsersyouAppData...".
   # Forward slashes are not meta in bash and Windows CreateProcess accepts
   # them as path separators, so this works in both worlds.
   $cmdPath = $BinPath -replace '\\','/'
